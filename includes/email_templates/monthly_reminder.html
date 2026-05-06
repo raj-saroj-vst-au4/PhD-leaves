@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monthly Attendance Reminder</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 600px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #1f2937;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .header .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 40px 30px;
+            line-height: 1.6;
+        }
+        .content h2 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 15px 0;
+            color: #4b5563;
+        }
+        .info-box {
+            background-color: #f9fafb;
+            border: 1px solid #d1d5db;
+            border-left: 4px solid #374151;
+            padding: 20px;
+            margin: 25px 0;
+            border-radius: 4px;
+        }
+        .info-box h3 {
+            margin: 0 0 15px 0;
+            color: #1f2937;
+            font-size: 18px;
+        }
+        .balance-grid {
+            display: table;
+            width: 100%;
+            margin-top: 15px;
+        }
+        .balance-item {
+            display: table-row;
+        }
+        .balance-label,
+        .balance-value {
+            display: table-cell;
+            padding: 8px 0;
+        }
+        .balance-label {
+            font-weight: 600;
+            color: #374151;
+            width: 60%;
+        }
+        .balance-value {
+            color: #1f2937;
+            font-weight: 600;
+            text-align: right;
+        }
+        .checklist {
+            background-color: #f9fafb;
+            border-radius: 4px;
+            padding: 20px;
+            margin: 25px 0;
+        }
+        .checklist h3 {
+            margin: 0 0 15px 0;
+            color: #1f2937;
+            font-size: 16px;
+        }
+        .checklist ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        .checklist li {
+            margin: 10px 0;
+            color: #4b5563;
+        }
+        .button {
+            display: inline-block;
+            margin: 30px 0;
+            padding: 14px 30px;
+            background-color: #1f2937;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: #374151;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }
+        .footer a {
+            color: #374151;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">📅</div>
+            <h1>Monthly Attendance Reminder</h1>
+        </div>
+
+        <div class="content">
+            <h2>Dear {STUDENT_NAME},</h2>
+
+            <p>This is a friendly reminder to review your attendance and leave records for <strong>{MONTH}</strong>.</p>
+
+            <div class="info-box">
+                <h3>Your Current Leave Balance:</h3>
+                <div class="balance-grid">
+                    <div class="balance-item">
+                        <span class="balance-label">Personal Leave:</span>
+                        <span class="balance-value">{PERSONAL_BALANCE} days</span>
+                    </div>
+                    <div class="balance-item">
+                        <span class="balance-label">Medical Leave:</span>
+                        <span class="balance-value">{MEDICAL_BALANCE} days</span>
+                    </div>
+                    <div class="balance-item">
+                        <span class="balance-label">Academic Leave:</span>
+                        <span class="balance-value">{ACADEMIC_BALANCE} days</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="checklist">
+                <h3>Monthly Checklist:</h3>
+                <ul>
+                    <li>Review your leave applications and their current status</li>
+                    <li>Ensure all absences have corresponding leave applications</li>
+                    <li>Check your leave balance and plan accordingly</li>
+                    <li>If you have any pending approvals, follow up with the respective authority</li>
+                    <li>Update your contact information if changed</li>
+                </ul>
+            </div>
+
+            <p><strong>Important:</strong> Please ensure that you submit leave applications in advance and maintain accurate records. Unrecorded absences may affect your academic standing.</p>
+
+            <center>
+                <a href="{DASHBOARD_URL}" class="button">View Dashboard</a>
+            </center>
+
+            <p>If you have any questions or concerns about your leave balance or applications, please contact your faculty guide or the academic office.</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated monthly reminder from {SITE_NAME}.</p>
+            <p>&copy; 2025 IIT Bombay. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

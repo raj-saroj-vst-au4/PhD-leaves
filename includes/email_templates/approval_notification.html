@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leave Application Approved</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 600px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #1f2937;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .header .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 40px 30px;
+            line-height: 1.6;
+        }
+        .content h2 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 15px 0;
+            color: #4b5563;
+        }
+        .success-box {
+            background-color: #f9fafb;
+            border: 1px solid #d1d5db;
+            border-left: 4px solid #1f2937;
+            padding: 20px;
+            margin: 25px 0;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .success-box h3 {
+            margin: 0 0 10px 0;
+            color: #1f2937;
+            font-size: 18px;
+        }
+        .success-box p {
+            margin: 5px 0;
+            color: #374151;
+            font-weight: 600;
+        }
+        .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 25px 0;
+        }
+        .details-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .details-table td:first-child {
+            font-weight: 600;
+            color: #6b7280;
+            width: 40%;
+        }
+        .details-table td:last-child {
+            color: #1f2937;
+        }
+        .button {
+            display: inline-block;
+            margin: 30px 0;
+            padding: 14px 30px;
+            background-color: #1f2937;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: #374151;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }
+        .footer a {
+            color: #374151;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">✓</div>
+            <h1>Leave Approved</h1>
+        </div>
+
+        <div class="content">
+            <h2>Dear {STUDENT_NAME},</h2>
+
+            <div class="success-box">
+                <h3>Your Leave Application Has Been Approved!</h3>
+                <p>You may proceed with your planned leave.</p>
+            </div>
+
+            <p>Your leave application has been successfully approved by all necessary authorities. Below are the details of your approved leave:</p>
+
+            <table class="details-table">
+                <tr>
+                    <td>Leave Type:</td>
+                    <td><strong>{LEAVE_TYPE}</strong></td>
+                </tr>
+                <tr>
+                    <td>Start Date:</td>
+                    <td>{START_DATE}</td>
+                </tr>
+                <tr>
+                    <td>End Date:</td>
+                    <td>{END_DATE}</td>
+                </tr>
+                <tr>
+                    <td>Total Days:</td>
+                    <td><strong>{TOTAL_DAYS} Leaves</strong></td>
+                </tr>
+            </table>
+
+            <p><strong>Important:</strong> Please ensure that you have completed all necessary formalities before proceeding with your leave. If you have any TA duties, make sure to inform your TA coordinator.</p>
+
+            <center>
+                <a href="{DASHBOARD_URL}" class="button">View Dashboard</a>
+            </center>
+
+            <p>You can view your complete leave history and current balance on your dashboard.</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated email from {SITE_NAME}. Please do not reply to this email.</p>
+            <p>&copy; 2025 IIT Bombay. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

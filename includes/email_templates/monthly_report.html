@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monthly Leave Report</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 650px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #1f2937;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .header .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .content {
+            padding: 40px 30px;
+            line-height: 1.6;
+        }
+        .content h2 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 15px 0;
+            color: #4b5563;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin: 25px 0;
+        }
+        .stat-card {
+            background-color: #f9fafb;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            border-left: 4px solid #1f2937;
+        }
+        .stat-card.approved {
+            border-left-color: #374151;
+        }
+        .stat-card.rejected {
+            border-left-color: #6b7280;
+        }
+        .stat-card.pending {
+            border-left-color: #9ca3af;
+        }
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #1f2937;
+            margin: 10px 0;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #6b7280;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .details-section {
+            margin: 30px 0;
+        }
+        .details-section h3 {
+            color: #1f2937;
+            font-size: 18px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #1f2937;
+            padding-bottom: 10px;
+        }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .detail-label {
+            font-weight: 600;
+            color: #6b7280;
+        }
+        .detail-value {
+            font-weight: 600;
+            color: #1f2937;
+        }
+        .highlight-box {
+            background-color: #f9fafb;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+        }
+        .highlight-box h3 {
+            margin: 0 0 10px 0;
+            color: #1f2937;
+            font-size: 16px;
+        }
+        .highlight-box p {
+            margin: 5px 0;
+            color: #4b5563;
+            font-weight: 600;
+        }
+        .button {
+            display: inline-block;
+            margin: 30px 0;
+            padding: 14px 30px;
+            background-color: #1f2937;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: #374151;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }
+        .footer a {
+            color: #374151;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">📊</div>
+            <h1>Monthly Leave Report</h1>
+        </div>
+
+        <div class="content">
+            <h2>Leave Statistics for {MONTH}</h2>
+
+            <p>Dear Administrator, here is the comprehensive monthly report for leave applications submitted during <strong>{MONTH}</strong>.</p>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Applications</div>
+                    <div class="stat-value">{TOTAL_APPLICATIONS}</div>
+                </div>
+                <div class="stat-card approved">
+                    <div class="stat-label">Approved</div>
+                    <div class="stat-value">{APPROVED_APPLICATIONS}</div>
+                </div>
+                <div class="stat-card rejected">
+                    <div class="stat-label">Rejected</div>
+                    <div class="stat-value">{REJECTED_APPLICATIONS}</div>
+                </div>
+                <div class="stat-card pending">
+                    <div class="stat-label">Pending</div>
+                    <div class="stat-value">{PENDING_APPLICATIONS}</div>
+                </div>
+            </div>
+
+            <div class="details-section">
+                <h3>Leave Type Breakdown</h3>
+                <div class="detail-row">
+                    <span class="detail-label">Personal Leaves:</span>
+                    <span class="detail-value">{PERSONAL_LEAVES} applications</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Medical Leaves:</span>
+                    <span class="detail-value">{MEDICAL_LEAVES} applications</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Academic Leaves:</span>
+                    <span class="detail-value">{ACADEMIC_LEAVES} applications</span>
+                </div>
+            </div>
+
+            <div class="highlight-box">
+                <h3>Extended Leaves (Requiring Dean AP Approval):</h3>
+                <p>{EXTENDED_LEAVES} applications required Dean AP approval this month</p>
+            </div>
+
+            <div class="details-section">
+                <h3>Key Insights</h3>
+                <ul style="margin: 10px 0; padding-left: 20px; color: #4b5563;">
+                    <li>Review pending applications to ensure timely processing</li>
+                    <li>Follow up on extended leave approvals if pending</li>
+                    <li>Monitor leave balance trends across students</li>
+                    <li>Identify any patterns that may require policy attention</li>
+                </ul>
+            </div>
+
+            <center>
+                <a href="{REPORT_URL}" class="button">View Detailed Report</a>
+            </center>
+
+            <p style="font-size: 13px; color: #6b7280; margin-top: 30px;">This report is generated automatically at the end of each month. For real-time data and detailed analytics, please visit the reports section in the admin dashboard.</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated monthly report from {SITE_NAME}.</p>
+            <p>&copy; 2025 IIT Bombay. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

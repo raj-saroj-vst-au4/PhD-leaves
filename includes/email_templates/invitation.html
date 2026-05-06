@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invitation to Join {SITE_NAME}</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 600px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #1f2937;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 40px 30px;
+            line-height: 1.6;
+        }
+        .content h2 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 15px 0;
+            color: #4b5563;
+        }
+        .button {
+            display: inline-block;
+            margin: 30px 0;
+            padding: 14px 30px;
+            background-color: #1f2937;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: #374151;
+        }
+        .info-box {
+            background-color: #f9fafb;
+            border-left: 4px solid #374151;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }
+        .footer a {
+            color: #374151;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{SITE_NAME}</h1>
+        </div>
+
+        <div class="content">
+            <h2>Welcome, {NAME}!</h2>
+
+            <p>You have been invited to join the <strong>{SITE_NAME}</strong>, a portal for managing PhD student leave applications at SJMSOM IIT Bombay.</p>
+
+            <p>Click the button below to complete your registration and set up your account:</p>
+
+            <center>
+                <a href="{SIGNUP_LINK}" class="button">Complete Registration</a>
+            </center>
+
+            <div class="info-box">
+                <strong>Important:</strong> This invitation link will expire in <strong>{EXPIRY_HOURS} hours</strong>. Please complete your registration before the link expires.
+            </div>
+
+            <p>If you're unable to click the button above, copy and paste the following link into your browser:</p>
+            <p style="word-break: break-all; color: #374151;">{SIGNUP_LINK}</p>
+
+            <p>If you did not expect this invitation or have any questions, please contact the system administrator.</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated email from {SITE_NAME}. Please do not reply to this email.</p>
+            <p>&copy; 2025 IIT Bombay. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

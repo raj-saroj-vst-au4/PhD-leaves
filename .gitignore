@@ -1,0 +1,50 @@
+# ---- Dependencies ----
+/vendor/
+/node_modules/
+
+# ---- Local environment / secrets ----
+# These hold DB and SMTP credentials. Commit *.example versions instead.
+/config/database.php
+/config/mail.php
+.env
+.env.*
+
+# ---- Installer marker ----
+/.installed
+
+# ---- Generated / runtime data ----
+# Logs
+/logs/*
+!/logs/.gitkeep
+
+# User uploads (medical certificates, supporting documents — sensitive)
+/public/uploads/*
+!/public/uploads/.gitkeep
+!/public/uploads/medical_documents/.gitkeep
+
+# Database backups and ad-hoc dumps
+/database/backups/*
+!/database/backups/.gitkeep
+/proddump.sql
+*.sql.gz
+*.dump
+
+# Test coverage output
+/coverage/
+.phpunit.result.cache
+
+# ---- OS / editor cruft ----
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ---- Build / cache ----
+*.log
+*.cache
+.cache/

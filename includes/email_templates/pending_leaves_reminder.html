@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pending Leave Approvals</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 640px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #b45309;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 35px 30px;
+            line-height: 1.6;
+        }
+        .content h2 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 14px 0;
+            color: #4b5563;
+        }
+        .summary {
+            background-color: #fef3c7;
+            border-left: 4px solid #b45309;
+            padding: 14px 18px;
+            margin: 20px 0;
+            border-radius: 4px;
+            color: #78350f;
+            font-weight: 600;
+        }
+        .leaves-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 14px;
+        }
+        .leaves-table th {
+            background-color: #f3f4f6;
+            color: #374151;
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 2px solid #e5e7eb;
+            font-weight: 600;
+        }
+        .leaves-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #e5e7eb;
+            color: #1f2937;
+            vertical-align: top;
+        }
+        .leaves-table tr:last-child td {
+            border-bottom: none;
+        }
+        .waiting {
+            color: #b45309;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .button {
+            display: inline-block;
+            margin: 25px 0 10px 0;
+            padding: 14px 30px;
+            background-color: #1f2937;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 600;
+            text-align: center;
+        }
+        .button:hover {
+            background-color: #374151;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Pending Leave Approvals</h1>
+        </div>
+
+        <div class="content">
+            <h2>Dear {RECIPIENT_NAME},</h2>
+
+            <p>This is a daily reminder from {SITE_NAME}. The following leave applications from your students are waiting for your approval as <strong>{ROLE_LABEL}</strong>:</p>
+
+            <div class="summary">
+                {PENDING_COUNT} pending application(s) require your action.
+            </div>
+
+            <table class="leaves-table">
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Roll No.</th>
+                        <th>Leave Type</th>
+                        <th>Dates</th>
+                        <th>Days</th>
+                        <th>Waiting</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {PENDING_ROWS}
+                </tbody>
+            </table>
+
+            <p>Please review and take action at your earliest convenience so the workflow can proceed.</p>
+
+            <center>
+                <a href="{ACTION_URL}" class="button">Review Pending Approvals</a>
+            </center>
+
+            <p style="font-size: 12px; color: #6b7280;">If the button above doesn't work, copy and paste this link into your browser:</p>
+            <p style="word-break: break-all; font-size: 12px; color: #374151;">{ACTION_URL}</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated daily reminder from {SITE_NAME}. Please do not reply to this email.</p>
+            <p>&copy; 2025 IIT Bombay. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>
