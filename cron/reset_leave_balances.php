@@ -115,7 +115,7 @@ try {
 
         // Log to system_logs table
         $stmt = $db->prepare("INSERT INTO system_logs (user_id, action, module, description)
-                              VALUES (1, 'cron_leave_reset', 'cron', :description)");
+                              VALUES (NULL, 'cron_leave_reset', 'cron', :description)");
         $stmt->execute([
             ':description' => "Leave balances reset. Emails sent: $emailsSent, Failed: $emailsFailed"
         ]);

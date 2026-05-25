@@ -124,7 +124,7 @@ try {
 
     // Log to system_logs
     $stmt = $db->prepare("INSERT INTO system_logs (user_id, action, module, description)
-                          VALUES (1, 'cron_monthly_reminder', 'cron', :description)");
+                          VALUES (NULL, 'cron_monthly_reminder', 'cron', :description)");
     $stmt->execute([
         ':description' => "Monthly reminders sent. Success: $emailsSent, Failed: $emailsFailed"
     ]);

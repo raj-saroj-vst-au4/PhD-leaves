@@ -80,7 +80,7 @@ try {
     if (empty($rows)) {
         cronLog("No pending leaves require reminders. Exiting.");
         $stmt = $db->prepare("INSERT INTO system_logs (user_id, action, module, description)
-                              VALUES (1, 'cron_pending_reminder', 'cron', :description)");
+                              VALUES (NULL, 'cron_pending_reminder', 'cron', :description)");
         $stmt->execute([':description' => "No pending leaves to remind about."]);
         exit(0);
     }
@@ -150,7 +150,7 @@ try {
     cronLog("Reminders sent: $emailsSent, Failed: $emailsFailed, Skipped: $skipped");
 
     $stmt = $db->prepare("INSERT INTO system_logs (user_id, action, module, description)
-                          VALUES (1, 'cron_pending_reminder', 'cron', :description)");
+                          VALUES (NULL, 'cron_pending_reminder', 'cron', :description)");
     $stmt->execute([
         ':description' => "Daily pending reminders. Sent: $emailsSent, Failed: $emailsFailed, Skipped: $skipped"
     ]);
