@@ -124,8 +124,8 @@ $totalCount = $guideCount + $taCount;
                 $borderClass = $isGuide ? 'border-l-orange-500' : 'border-l-blue-500';
                 $bannerBg    = $isGuide ? 'bg-orange-50' : 'bg-blue-50';
                 $roleBadge   = $isGuide
-                    ? '<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-orange-100 text-orange-800"><i class="fas fa-user-tie mr-1.5"></i>Faculty Guide</span>'
-                    : '<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-100 text-blue-800"><i class="fas fa-chalkboard-teacher mr-1.5"></i>TA Coordinator</span>';
+                    ? '<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-orange-100 text-orange-800">Faculty Guide</span>'
+                    : '<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-100 text-blue-800">TA Coordinator</span>';
                 $roleLong    = $isGuide ? 'Faculty Guide' : 'TA Coordinator';
             ?>
             <div class="pending-card bg-white rounded-lg shadow-md overflow-hidden border-l-4 <?php echo $borderClass; ?>"
