@@ -15,6 +15,10 @@ require_once __DIR__ . '/../classes/User.php';
 require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../includes/EmailService.php';
 
+// Must run before the POST handlers below — with the check only after header.php,
+// any authenticated user could drive these admin mutations.
+requireRole('admin');
+
 $userClass = new User();
 $emailService = new EmailService();
 
@@ -403,7 +407,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 // Now include header.php which outputs HTML and sets up the page layout
 $pageTitle = 'User Management';
 require_once __DIR__ . '/../includes/header.php';
-requireRole('admin');
 
 // Get role filter (must be after sanitize is loaded from header)
 $roleFilter = sanitize($_GET['role'] ?? '');

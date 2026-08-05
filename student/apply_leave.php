@@ -13,6 +13,9 @@ require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../classes/User.php';
 require_once __DIR__ . '/../includes/EmailService.php';
 
+// Must run before the POST handler below so only students can submit applications.
+requireRole('student');
+
 $studentId = null;
 $error = '';
 $hasGuide = false;
@@ -167,7 +170,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Now include header.php which outputs HTML
 $pageTitle = 'Apply for Leave';
 require_once __DIR__ . '/../includes/header.php';
-requireRole('student');
 
 // Get student ID and details if not already fetched (when form wasn't submitted)
 if (!$studentId) {
