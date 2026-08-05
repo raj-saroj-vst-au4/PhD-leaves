@@ -311,7 +311,9 @@ $pendingLeaves = $leaveClass->getPendingForAdmin();
         <div class="px-6 py-4 border-b border-gray-200">
             <h3 class="text-xl font-semibold text-gray-900" id="modalTitle">Confirm Approval</h3>
         </div>
-        <form id="approvalForm" class="p-6">
+        <!-- noloading: submitted via fetch; keeps main.js from adding a btn-loading
+             state that nothing removes when the API errors -->
+        <form id="approvalForm" class="p-6 noloading">
             <?php echo getCSRFField(); ?>
             <input type="hidden" id="actionLeaveId" name="leave_id">
             <input type="hidden" id="actionType" name="action">

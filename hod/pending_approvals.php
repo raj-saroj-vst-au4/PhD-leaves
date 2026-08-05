@@ -368,7 +368,9 @@ $pendingCount = count($pendingApprovals);
                 <i class="fas fa-times text-xl"></i>
             </button>
         </div>
-        <form id="hodApprovalForm" class="p-6">
+        <!-- noloading: submitted via fetch; keeps main.js from adding a btn-loading
+             state that nothing removes when the API errors -->
+        <form id="hodApprovalForm" class="p-6 noloading">
             <input type="hidden" id="hodLeaveId" name="leave_id">
             <input type="hidden" id="hodActionType" name="action">
             <input type="hidden" name="role" value="hod">

@@ -396,7 +396,9 @@ $totalCount = $guideCount + $taCount;
                 <i class="fas fa-times text-lg sm:text-xl"></i>
             </button>
         </div>
-        <form id="approvalForm" class="p-4 sm:p-6">
+        <!-- noloading: this form is submitted via fetch; the global handler in main.js
+     would otherwise add a btn-loading state nothing removes when the API errors -->
+        <form id="approvalForm" class="p-4 sm:p-6 noloading">
             <input type="hidden" id="leaveId" name="leave_id">
             <input type="hidden" id="actionType" name="action">
             <input type="hidden" id="roleType" name="role">
