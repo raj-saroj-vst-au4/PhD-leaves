@@ -603,6 +603,16 @@ class Leave {
             $params[':end_date'] = $filters['end_date'];
         }
 
+        // Leaves touching any day of [overlaps_from, overlaps_to]. The
+        // start_date/end_date filters above only match leaves fully inside a
+        // range, so a leave spanning the boundary would be dropped from both
+        // adjacent periods.
+        if (!empty($filters['overlaps_from']) && !empty($filters['overlaps_to'])) {
+            $sql .= " AND la.start_date <= :overlaps_to AND la.end_date >= :overlaps_from";
+            $params[':overlaps_from'] = $filters['overlaps_from'];
+            $params[':overlaps_to'] = $filters['overlaps_to'];
+        }
+
         $sql .= " ORDER BY la.created_at DESC";
 
         if ($limit) {

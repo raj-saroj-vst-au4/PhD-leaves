@@ -24,9 +24,15 @@ $pendingAdmin = $leaveClass->getPendingForAdmin();
 $adjacentLeaves = $leaveClass->getLeavesWithAdjacentFlags();
 ?>
 
-<div class="mb-6">
-    <h1 class="text-3xl font-bold text-gray-900">Leave Management</h1>
-    <p class="text-gray-600 mt-2">View and manage all leave applications</p>
+<div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+    <div>
+        <h1 class="text-3xl font-bold text-gray-900">Leave Management</h1>
+        <p class="text-gray-600 mt-2">View and manage all leave applications</p>
+    </div>
+    <a href="<?php echo BASE_URL; ?>/admin/monthly_leaves.php"
+       class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 whitespace-nowrap">
+        <i class="fas fa-calendar-alt mr-2"></i>Monthly View
+    </a>
 </div>
 
 <?php displayFlashMessage(); ?>
@@ -158,7 +164,9 @@ $adjacentLeaves = $leaveClass->getLeavesWithAdjacentFlags();
                 <i class="fas fa-ban mr-2"></i>Cancel Leave Application
             </h3>
         </div>
-        <form id="cancelForm" class="p-6">
+        <!-- noloading: submitted via fetch; keeps main.js from adding a btn-loading
+             state that nothing removes when the API errors -->
+        <form id="cancelForm" class="p-6 noloading">
             <?php echo getCSRFField(); ?>
             <input type="hidden" id="cancelLeaveId" name="leave_id">
             <input type="hidden" name="action" value="cancel">
