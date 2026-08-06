@@ -60,7 +60,12 @@ if (!isset($pageTitle)) {
     <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/vendor/fontawesome/css/all.min.css">
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/css/custom.css">
+    <link rel="stylesheet" href="<?php echo asset_url('public/css/custom.css'); ?>">
+
+    <!-- Page-specific styles (mirrors $pageScripts in footer.php) -->
+    <?php if (isset($pageStyles)): ?>
+        <?php echo $pageStyles; ?>
+    <?php endif; ?>
 
     <!-- CSRF Token Meta Tag -->
     <meta name="csrf-token" content="<?php echo $csrfToken; ?>">
@@ -119,12 +124,18 @@ if (!isset($pageTitle)) {
                         <a href="<?php echo BASE_URL; ?>/student/holidays.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
                             <i class="fas fa-calendar-alt mr-1"></i> Holidays
                         </a>
+                        <a href="<?php echo BASE_URL; ?>/student/attendance.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
+                            <i class="fas fa-user-check mr-1"></i> Attendance
+                        </a>
                     <?php elseif ($userRole === 'faculty'): ?>
                         <a href="<?php echo BASE_URL; ?>/faculty/dashboard.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
                             <i class="fas fa-home mr-1"></i> Dashboard
                         </a>
                         <a href="<?php echo BASE_URL; ?>/faculty/pending_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
                             <i class="fas fa-check-circle mr-1"></i> Approvals
+                        </a>
+                        <a href="<?php echo BASE_URL; ?>/faculty/attendance_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
+                            <i class="fas fa-user-check mr-1"></i> Attendance
                         </a>
                         <a href="<?php echo BASE_URL; ?>/faculty/my_students.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
                             <i class="fas fa-user-graduate mr-1"></i> My Students
@@ -163,6 +174,12 @@ if (!isset($pageTitle)) {
                         </a>
                         <a href="<?php echo BASE_URL; ?>/admin/analytics.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
                             <i class="fas fa-chart-bar mr-1"></i> Analytics
+                        </a>
+                        <a href="<?php echo BASE_URL; ?>/admin/attendance.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
+                            <i class="fas fa-user-check mr-1"></i> Attendance
+                        </a>
+                        <a href="<?php echo BASE_URL; ?>/admin/attendance_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
+                            <i class="fas fa-clipboard-check mr-1"></i> Sign-off
                         </a>
                     <?php endif; ?>
 
@@ -235,12 +252,18 @@ if (!isset($pageTitle)) {
                     <a href="<?php echo BASE_URL; ?>/student/holidays.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
                         <i class="fas fa-calendar-alt mr-2"></i> Holidays
                     </a>
+                    <a href="<?php echo BASE_URL; ?>/student/attendance.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
+                        <i class="fas fa-user-check mr-2"></i> Attendance
+                    </a>
                 <?php elseif ($userRole === 'faculty'): ?>
                     <a href="<?php echo BASE_URL; ?>/faculty/dashboard.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
                         <i class="fas fa-home mr-2"></i> Dashboard
                     </a>
                     <a href="<?php echo BASE_URL; ?>/faculty/pending_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
                         <i class="fas fa-check-circle mr-2"></i> Approvals
+                    </a>
+                    <a href="<?php echo BASE_URL; ?>/faculty/attendance_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
+                        <i class="fas fa-user-check mr-2"></i> Attendance
                     </a>
                     <a href="<?php echo BASE_URL; ?>/faculty/my_students.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
                         <i class="fas fa-user-graduate mr-2"></i> My Students
@@ -279,6 +302,12 @@ if (!isset($pageTitle)) {
                     </a>
                     <a href="<?php echo BASE_URL; ?>/admin/analytics.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
                         <i class="fas fa-chart-bar mr-2"></i> Analytics
+                    </a>
+                    <a href="<?php echo BASE_URL; ?>/admin/attendance.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
+                        <i class="fas fa-user-check mr-2"></i> Attendance
+                    </a>
+                    <a href="<?php echo BASE_URL; ?>/admin/attendance_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
+                        <i class="fas fa-clipboard-check mr-2"></i> Sign-off
                     </a>
                 <?php endif; ?>
 

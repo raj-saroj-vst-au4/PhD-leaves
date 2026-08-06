@@ -7,6 +7,24 @@
 /**
  * Sanitize input to prevent XSS
  */
+/**
+ * Cache-busted URL for one of our own static assets (CSS/JS under public/).
+ *
+ * The web server sends no Cache-Control for /public files — only ETag and
+ * Last-Modified — so browsers fall back to HEURISTIC caching and may reuse a
+ * stale copy for hours without ever revalidating. On phones that meant students
+ * kept running old attendance JavaScript after a deploy, so a shipped fix looked
+ * like it had never arrived. Appending the file's mtime changes the URL whenever
+ * the file changes: a deploy is always picked up, and unchanged files stay
+ * cached. Vendored libraries are versioned by their own paths, but they get the
+ * same treatment so an upgrade in place is never missed.
+ */
+function asset_url($relativePath) {
+    $rel = ltrim($relativePath, '/');
+    $mtime = @filemtime(__DIR__ . '/../' . $rel);
+    return BASE_URL . '/' . $rel . ($mtime ? '?v=' . $mtime : '');
+}
+
 function sanitize($data) {
     if (is_array($data)) {
         return array_map('sanitize', $data);

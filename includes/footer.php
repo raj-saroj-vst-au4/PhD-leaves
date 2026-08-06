@@ -37,7 +37,7 @@
     </footer>
 
     <!-- Custom JavaScript -->
-    <script src="<?php echo BASE_URL; ?>/public/js/main.js"></script>
+    <script src="<?php echo asset_url('public/js/main.js'); ?>"></script>
 
     <!-- Page-specific scripts can be added here -->
     <?php if (isset($pageScripts)): ?>
