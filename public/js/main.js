@@ -17,6 +17,7 @@ $(document).ready(function() {
     initDateInputs();
     initTooltips();
     initButtonLoadingStates();
+    initNavDropdowns();
 
     // Set CSRF token for AJAX requests
     $.ajaxSetup({
@@ -724,3 +725,60 @@ window.exportTableToCSV = exportTableToCSV;
 window.calculateLeaveDays = calculateLeaveDays;
 window.updateLeaveDaysCalculation = updateLeaveDaysCalculation;
 window.setButtonLoading = setButtonLoading;
+
+// ===================================
+// Grouped Navigation Dropdowns
+// ===================================
+/**
+ * Drives the admin navbar's grouped menus.
+ *
+ * Delegated from document so it covers every [data-nav-menu] button without
+ * needing to know how many groups the nav defines. Opening one closes the
+ * others, since two panels overlapping is the mess this grouping set out to fix.
+ */
+function initNavDropdowns() {
+    const buttons = document.querySelectorAll('.nav-menu-btn');
+    if (!buttons.length) {
+        return;
+    }
+
+    function closeAll(except) {
+        document.querySelectorAll('.nav-menu').forEach(function (menu) {
+            if (menu !== except) {
+                menu.classList.add('hidden');
+            }
+        });
+        document.querySelectorAll('.nav-menu-btn').forEach(function (btn) {
+            if (!except || btn.getAttribute('data-nav-menu') !== except.id) {
+                btn.setAttribute('aria-expanded', 'false');
+            }
+        });
+    }
+
+    buttons.forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const menu = document.getElementById(btn.getAttribute('data-nav-menu'));
+            if (!menu) {
+                return;
+            }
+            const willOpen = menu.classList.contains('hidden');
+            closeAll(willOpen ? menu : null);
+            menu.classList.toggle('hidden', !willOpen);
+            btn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        });
+    });
+
+    // Clicking anywhere else, or Escape, closes them.
+    document.addEventListener('click', function (e) {
+        if (!e.target.closest('.nav-menu, .nav-menu-btn')) {
+            closeAll(null);
+        }
+    });
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+            closeAll(null);
+        }
+    });
+}

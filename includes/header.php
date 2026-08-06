@@ -29,6 +29,52 @@ if (!isset($pageTitle)) {
 } else {
     $pageTitle = $pageTitle . ' - ' . SITE_NAME;
 }
+
+/*
+ * Admin navigation, grouped.
+ *
+ * Eight flat links overflowed the bar and wrapped. One definition drives BOTH
+ * the desktop dropdowns and the mobile list, so the two cannot drift apart —
+ * they previously duplicated every link by hand. Grouping also surfaces the
+ * monthly-leaves and adjacent-leaves pages, which had no nav entry at all.
+ */
+$adminNav = [
+    ['label' => 'Dashboard', 'icon' => 'fa-home', 'url' => '/admin/dashboard.php'],
+    ['label' => 'Leaves', 'icon' => 'fa-file-alt', 'items' => [
+        ['label' => 'Pending Approvals', 'icon' => 'fa-check-circle', 'url' => '/admin/pending_approvals.php'],
+        ['label' => 'All Applications',  'icon' => 'fa-list',         'url' => '/admin/leave_management.php'],
+        ['label' => 'Monthly View',      'icon' => 'fa-calendar-alt', 'url' => '/admin/monthly_leaves.php'],
+        ['label' => 'Adjacent Leaves',   'icon' => 'fa-compress-arrows-alt', 'url' => '/admin/adjacent_leaves.php'],
+    ]],
+    ['label' => 'Attendance', 'icon' => 'fa-user-check', 'items' => [
+        ['label' => 'Office Dashboard', 'icon' => 'fa-tachometer-alt',  'url' => '/admin/attendance.php'],
+        ['label' => 'Monthly Sign-off', 'icon' => 'fa-clipboard-check', 'url' => '/admin/attendance_approvals.php'],
+        ['label' => 'Code Screen',      'icon' => 'fa-tv',              'url' => '/admin/attendance_display.php', 'blank' => true],
+    ]],
+    ['label' => 'Manage', 'icon' => 'fa-cog', 'items' => [
+        ['label' => 'Users',     'icon' => 'fa-users',        'url' => '/admin/users.php'],
+        ['label' => 'Holidays',  'icon' => 'fa-calendar-day', 'url' => '/admin/holidays.php'],
+        ['label' => 'Analytics', 'icon' => 'fa-chart-bar',    'url' => '/admin/analytics.php'],
+    ]],
+];
+
+// Current page, so the open group and the current item can be highlighted —
+// with submenus you otherwise lose all sense of where you are.
+$currentScript = basename($_SERVER['SCRIPT_NAME'] ?? '');
+$navIsCurrent = function ($url) use ($currentScript) {
+    return basename($url) === $currentScript;
+};
+$navGroupIsCurrent = function ($group) use ($navIsCurrent) {
+    if (!isset($group['items'])) {
+        return $navIsCurrent($group['url']);
+    }
+    foreach ($group['items'] as $it) {
+        if ($navIsCurrent($it['url'])) {
+            return true;
+        }
+    }
+    return false;
+};
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -157,30 +203,39 @@ if (!isset($pageTitle)) {
                             <i class="fas fa-chart-bar mr-1"></i> Analytics
                         </a>
                     <?php elseif ($userRole === 'admin'): ?>
-                        <a href="<?php echo BASE_URL; ?>/admin/dashboard.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-home mr-1"></i> Dashboard
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-check-circle mr-1"></i> Approvals
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/users.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-users mr-1"></i> Users
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/holidays.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-calendar-alt mr-1"></i> Holidays
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/leave_management.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-file-alt mr-1"></i> Leaves
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/analytics.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-chart-bar mr-1"></i> Analytics
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/attendance.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-user-check mr-1"></i> Attendance
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/admin/attendance_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-clipboard-check mr-1"></i> Sign-off
-                        </a>
+                        <?php foreach ($adminNav as $gi => $group): ?>
+                            <?php if (!isset($group['items'])): ?>
+                                <a href="<?php echo BASE_URL . $group['url']; ?>"
+                                   class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium <?php echo $navGroupIsCurrent($group) ? 'bg-blue-700' : ''; ?>">
+                                    <i class="fas <?php echo $group['icon']; ?> mr-1"></i> <?php echo $group['label']; ?>
+                                </a>
+                            <?php else: ?>
+                                <div class="relative">
+                                    <button type="button"
+                                            class="nav-menu-btn flex items-center text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium <?php echo $navGroupIsCurrent($group) ? 'bg-blue-700' : ''; ?>"
+                                            data-nav-menu="nav-menu-<?php echo $gi; ?>"
+                                            aria-expanded="false" aria-haspopup="true">
+                                        <i class="fas <?php echo $group['icon']; ?> mr-1"></i>
+                                        <span><?php echo $group['label']; ?></span>
+                                        <i class="fas fa-chevron-down ml-2 text-xs"></i>
+                                    </button>
+                                    <div id="nav-menu-<?php echo $gi; ?>" role="menu"
+                                         class="nav-menu hidden absolute left-0 z-50 mt-2 w-56 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 py-1">
+                                        <?php foreach ($group['items'] as $item): ?>
+                                            <a href="<?php echo BASE_URL . $item['url']; ?>"
+                                               <?php echo !empty($item['blank']) ? 'target="_blank" rel="noopener"' : ''; ?>
+                                               role="menuitem"
+                                               class="block px-4 py-2 text-sm hover:bg-gray-100 <?php echo $navIsCurrent($item['url']) ? 'bg-blue-50 text-blue-800 font-semibold' : 'text-gray-700'; ?>">
+                                                <i class="fas <?php echo $item['icon']; ?> mr-2 text-gray-400"></i><?php echo $item['label']; ?>
+                                                <?php if (!empty($item['blank'])): ?>
+                                                    <i class="fas fa-external-link-alt ml-1 text-xs text-gray-400"></i>
+                                                <?php endif; ?>
+                                            </a>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        <?php endforeach; ?>
                     <?php endif; ?>
 
                     <!-- User Profile Dropdown -->
@@ -285,30 +340,28 @@ if (!isset($pageTitle)) {
                         <i class="fas fa-chart-bar mr-2"></i> Analytics
                     </a>
                 <?php elseif ($userRole === 'admin'): ?>
-                    <a href="<?php echo BASE_URL; ?>/admin/dashboard.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-home mr-2"></i> Dashboard
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-check-circle mr-2"></i> Approvals
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/users.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-users mr-2"></i> Users
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/holidays.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-calendar-alt mr-2"></i> Holidays
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/leave_management.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-file-alt mr-2"></i> Leaves
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/analytics.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-chart-bar mr-2"></i> Analytics
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/attendance.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-user-check mr-2"></i> Attendance
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/admin/attendance_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-clipboard-check mr-2"></i> Sign-off
-                    </a>
+                    <?php foreach ($adminNav as $group): ?>
+                        <?php if (!isset($group['items'])): ?>
+                            <a href="<?php echo BASE_URL . $group['url']; ?>"
+                               class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium <?php echo $navGroupIsCurrent($group) ? 'bg-blue-700' : ''; ?>">
+                                <i class="fas <?php echo $group['icon']; ?> mr-2"></i> <?php echo $group['label']; ?>
+                            </a>
+                        <?php else: ?>
+                            <?php /* A heading plus indented links: no collapsing, so there is no
+                                     JS to fail on a phone and every destination stays one tap away. */ ?>
+                            <p class="px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-blue-200">
+                                <i class="fas <?php echo $group['icon']; ?> mr-2"></i><?php echo $group['label']; ?>
+                            </p>
+                            <?php foreach ($group['items'] as $item): ?>
+                                <a href="<?php echo BASE_URL . $item['url']; ?>"
+                                   <?php echo !empty($item['blank']) ? 'target="_blank" rel="noopener"' : ''; ?>
+                                   style="padding-left:2.25rem"
+                                   class="block text-white hover:bg-blue-700 pr-3 py-2 rounded-md text-base font-medium <?php echo $navIsCurrent($item['url']) ? 'bg-blue-700' : ''; ?>">
+                                    <i class="fas <?php echo $item['icon']; ?> mr-2 text-blue-200"></i><?php echo $item['label']; ?>
+                                </a>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
                 <?php endif; ?>
 
                 <!-- User info in mobile menu -->
