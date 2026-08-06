@@ -990,3 +990,19 @@ textarea:focus {
     border-radius: 50%;
     background-color: currentColor;
 }
+
+/* ---------------------------------------------------------------------------
+ * Utilities the vendored Tailwind build is missing.
+ *
+ * public/vendor/tailwind/tailwind.min.css is a PURGED build, so classes that
+ * were not in the project when it was generated resolve to nothing. These four
+ * are used for the coloured stage accents on the faculty approval pages — the
+ * left borders and role icons on faculty/pending_approvals.php have silently
+ * had no colour, and faculty/attendance_approvals.php needs the same set.
+ * Values are Tailwind defaults, so regenerating the build makes these redundant
+ * rather than conflicting. (Same approach as public/css/attendance.css.)
+ * ------------------------------------------------------------------------- */
+.border-l-blue-500   { border-left-color: #3b82f6; }
+.border-l-orange-500 { border-left-color: #f97316; }
+.text-orange-500     { color: #f97316; }
+.text-amber-700      { color: #b45309; }

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attendance Sign-off</title>
+    <style>
+        body { margin:0; padding:0; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+               background-color:#f3f4f6; color:#1f2937; }
+        .wrap { max-width:680px; margin:0 auto; padding:24px 16px; }
+        .card { background:#ffffff; border-radius:8px; overflow:hidden;
+                box-shadow:0 1px 3px rgba(0,0,0,.1); }
+        .head { background:#1d4ed8; color:#ffffff; padding:20px 24px; }
+        .head h1 { margin:0; font-size:20px; }
+        .head p { margin:6px 0 0; font-size:13px; opacity:.9; }
+        .body { padding:24px; font-size:14px; line-height:1.6; }
+        .note { background:#eff6ff; border-left:4px solid #1d4ed8; padding:12px 14px;
+                border-radius:4px; font-size:13px; margin:16px 0; }
+        table { width:100%; border-collapse:collapse; margin:18px 0; font-size:13px; }
+        th { background:#f3f4f6; text-align:left; padding:8px 10px; font-size:11px;
+             text-transform:uppercase; letter-spacing:.03em; color:#6b7280; }
+        td { padding:8px 10px; border-bottom:1px solid #e5e7eb; }
+        .btn { display:inline-block; background:#1d4ed8; color:#ffffff !important;
+               text-decoration:none; padding:12px 22px; border-radius:6px;
+               font-weight:600; font-size:14px; }
+        .foot { padding:16px 24px; background:#f9fafb; color:#6b7280; font-size:12px; }
+        .legend { font-size:12px; color:#6b7280; margin-top:4px; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="card">
+        <div class="head">
+            <h1>Attendance sign-off — {PERIOD}</h1>
+            <p>You are reviewing as {ROLE_LABEL}</p>
+        </div>
+        <div class="body">
+            <p>Dear {RECIPIENT_NAME},</p>
+
+            <p>The attendance record for <b>{PERIOD}</b> is ready for your review.
+               It covers <b>{STUDENT_COUNT}</b> student(s) assigned to you.</p>
+
+            <div class="note">{STAGE_NOTE}</div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Roll No.</th>
+                        <th style="text-align:center">Working</th>
+                        <th style="text-align:center">Present</th>
+                        <th style="text-align:center">Excused</th>
+                        <th style="text-align:center">Absent</th>
+                        <th style="text-align:center">%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {REPORT_ROWS}
+                </tbody>
+            </table>
+            <p class="legend">
+                <b>Present</b> = marked in person (or recorded by the office).
+                <b>Excused</b> = approved leave or an office exemption.
+                <b>Absent</b> = a working day with neither. Rows with an absence are shaded.
+            </p>
+
+            <p style="text-align:center; margin:26px 0 8px;">
+                <a href="{ACTION_URL}" class="btn">Review and approve</a>
+            </p>
+            <p style="font-size:12px; color:#6b7280; text-align:center;">
+                You can approve all students at once, or handle them individually.
+                Disputing a record requires a short reason so the office can follow it up.
+            </p>
+        </div>
+        <div class="foot">
+            This is an automated message from {SITE_NAME}. Please do not reply to it.
+        </div>
+    </div>
+</div>
+</body>
+</html>

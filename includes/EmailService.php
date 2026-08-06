@@ -448,6 +448,68 @@ class EmailService {
     }
 
     /**
+     * Ask one faculty member to sign off a month of attendance for ALL of their
+     * students, in a single combined email.
+     *
+     * @param array  $faculty ['id','name','email']
+     * @param string $role    'ta' | 'guide' — the stage they are being asked about
+     * @param string $period  e.g. "July 2026"
+     * @param array  $rows    att_month_approvals rows joined with student name/roll
+     * @return bool
+     */
+    public function sendAttendanceApprovalRequest($faculty, $role, $period, $rows)
+    {
+        if (empty($rows)) {
+            return false;
+        }
+
+        $roleLabel = $role === 'ta' ? 'TA Coordinator' : 'Faculty Guide';
+        $count = count($rows);
+        $subject = "Attendance sign-off: $period — $count student(s) - " . SITE_NAME;
+
+        // The guide reviews only after the TA has confirmed, so say so — it
+        // explains why the guide is seeing this now and what it already carries.
+        $stageNote = $role === 'ta'
+            ? 'You are the first reviewer. After you approve, each record goes to the '
+              . 'student&rsquo;s faculty guide for final sign-off.'
+            : 'The TA coordinator has already reviewed these records. Yours is the final sign-off.';
+
+        $rowsHtml = '';
+        foreach ($rows as $r) {
+            // Flag anything with an absence so it draws the eye — that is the
+            // whole point of a human reviewing the month.
+            $absent = (int) $r['absent_days'];
+            $pct = (float) $r['percentage'];
+            $rowStyle = $absent > 0 ? ' style="background:#fef2f2"' : '';
+            $rowsHtml .= '<tr' . $rowStyle . '>'
+                . '<td>' . htmlspecialchars($r['student_name']) . '</td>'
+                . '<td>' . htmlspecialchars($r['roll_number']) . '</td>'
+                . '<td style="text-align:center">' . (int) $r['working_days'] . '</td>'
+                . '<td style="text-align:center">' . (int) $r['present_days'] . '</td>'
+                . '<td style="text-align:center">' . (int) $r['excused_days'] . '</td>'
+                . '<td style="text-align:center"><b>' . $absent . '</b></td>'
+                . '<td style="text-align:center">' . number_format($pct, 1) . '%</td>'
+                . '</tr>';
+        }
+
+        $placeholders = [
+            '{RECIPIENT_NAME}' => $faculty['name'],
+            '{ROLE_LABEL}'     => $roleLabel,
+            '{PERIOD}'         => $period,
+            '{STUDENT_COUNT}'  => $count,
+            '{STAGE_NOTE}'     => $stageNote,
+            '{REPORT_ROWS}'    => $rowsHtml,
+            '{ACTION_URL}'     => $this->getAbsoluteUrl('/faculty/attendance_approvals.php'),
+            '{SITE_NAME}'      => SITE_NAME,
+        ];
+
+        $body = $this->loadTemplate('attendance_approval_request.html', $placeholders);
+
+        return $this->sendEmail($faculty['email'], $subject, $body,
+            'attendance_approval_request', null, $faculty['name']);
+    }
+
+    /**
      * Send monthly report to admins
      * @param array $admins Array of admin data
      * @param array $reportData Report statistics
