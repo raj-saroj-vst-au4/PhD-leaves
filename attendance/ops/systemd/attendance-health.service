@@ -1,0 +1,6 @@
+[Unit]
+Description=PhD attendance: health probe (emails office on sustained failure)
+
+[Service]
+Type=oneshot
+ExecStart=/srv/www/phdtimeoff/attendance/ops/bin/attendance-health.sh

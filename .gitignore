@@ -6,8 +6,13 @@
 # These hold DB and SMTP credentials. Commit *.example versions instead.
 /config/database.php
 /config/mail.php
+/config/attendance.php
 .env
 .env.*
+
+# ---- Attendance module runtime data (frames are biometric evidence) ----
+/attendance/.env
+/attendance/data/
 
 # ---- Installer marker ----
 /.installed

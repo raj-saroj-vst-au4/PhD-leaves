@@ -1,0 +1,7 @@
+# This directory holds the attendance backend SOURCE (Python/FastAPI).
+# It sits inside the Apache Alias /phdtimeoff document root, so without this
+# file the source — including .env with DB credentials — would be downloadable.
+# The app itself is served by a reverse proxy to the Docker container, never
+# from this directory. Keep this file in place. (Production nginx equivalent:
+# `location /phdtimeoff/attendance { deny all; }` — see RUNBOOK.md.)
+Require all denied

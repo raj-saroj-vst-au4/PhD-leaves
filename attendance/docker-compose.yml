@@ -1,0 +1,47 @@
+# Attendance backend container. The PHP portal stays on its existing web server
+# (Apache+mod_php on dev, nginx+PHP-FPM on production); only this Python service
+# is dockerised.
+#
+# Database over the unix socket, not TCP: both hosts bind MySQL to 127.0.0.1
+# only, which a container cannot reach, and production runs ROOTLESS Docker
+# where even `network_mode: host` lives in a separate network namespace. The
+# socket works in every combination and needs no database restart.
+#
+# SECURITY: the port is published to 127.0.0.1 only, so the API is reachable
+# from this machine alone and the PHP forwarder (attapi/) stays the single way
+# in. Never publish it on 0.0.0.0 — anyone on the LAN could then talk to the API
+# directly and forge the X-Client-IP header the office-WiFi gate depends on.
+services:
+  backend:
+    build: ./backend
+    image: phdtimeoff-attendance:latest
+    container_name: attendance-backend
+    restart: unless-stopped
+    env_file: .env
+    # Which uid writes the bind-mounted data dirs, set per host in .env:
+    #   rootful Docker  -> the host user that owns ./data (e.g. 1000:1000)
+    #   rootless Docker -> 0:0, since container-root maps to the unprivileged
+    #                      host user running the daemon (no host privilege)
+    user: "${ATT_CONTAINER_USER:-1001:1001}"
+    ports:
+      - "127.0.0.1:3070:8000"
+    volumes:
+      - ./data/frames:/data/frames
+      - ./data/reports:/data/reports
+      # Mount the socket DIRECTORY, not the socket file: mysqld recreates the
+      # socket on every restart, and a file bind-mount keeps pointing at the
+      # deleted inode — the backend then fails with "Connection refused" until
+      # the container is restarted (outage of 2026-08-01).
+      - ${DB_SOCKET_DIR:-/var/run/mysqld}:/var/run/mysqld
+    security_opt:
+      - "no-new-privileges:true"
+    # Headroom for a multi-frame enrollment burst. 1500m was too tight: the
+    # kernel OOM-killed the container part-way through /enroll/capture, which
+    # surfaced to the student as "the attendance service is not responding".
+    # Still bounded so a leak cannot take the host down (which has 64 GB).
+    mem_limit: 6g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5

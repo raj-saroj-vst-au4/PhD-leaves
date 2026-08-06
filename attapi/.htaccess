@@ -1,0 +1,9 @@
+# Apache only (dev). nginx ignores this file; the forwarder needs no nginx
+# configuration because it routes on ?p= rather than PATH_INFO.
+#
+# mod_php does not expose the Authorization header to PHP, and the attendance
+# ticket travels in it — republish it as an env var.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>

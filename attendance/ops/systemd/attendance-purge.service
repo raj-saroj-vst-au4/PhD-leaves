@@ -1,0 +1,10 @@
+[Unit]
+Description=PhD attendance: purge evidence frames past retention + expired tokens
+After=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/attendance/jobs.env
+ExecStart=/bin/sh -c '\
+  curl -fsS -m 300 -X POST -H "Authorization: Bearer ${JOB_TOKEN}" http://127.0.0.1:3070/api/jobs/purge-frames && \
+  curl -fsS -m 60  -X POST -H "Authorization: Bearer ${JOB_TOKEN}" http://127.0.0.1:3070/api/jobs/cleanup'

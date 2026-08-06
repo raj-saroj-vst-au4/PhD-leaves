@@ -1,0 +1,9 @@
+[Unit]
+Description=PhD attendance: nightly purge (03:00 IST)
+
+[Timer]
+OnCalendar=03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

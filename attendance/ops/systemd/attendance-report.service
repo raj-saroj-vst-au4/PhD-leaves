@@ -1,0 +1,10 @@
+[Unit]
+Description=PhD attendance: generate + email previous month's report
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/attendance/jobs.env
+ExecStart=/usr/bin/curl -fsS -m 600 -X POST \
+    -H "Authorization: Bearer ${JOB_TOKEN}" \
+    http://127.0.0.1:3070/api/jobs/monthly-report

@@ -1,0 +1,11 @@
+[Unit]
+Description=PhD attendance: monthly report on the 1st at 08:00 IST
+
+[Timer]
+# Host timezone is Asia/Kolkata (verified). Persistent=true re-fires a run
+# missed because the box was down on the 1st.
+OnCalendar=*-*-01 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
