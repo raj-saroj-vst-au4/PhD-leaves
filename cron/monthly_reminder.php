@@ -7,6 +7,21 @@
  * 0 9 25-31 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_reminder.php
  */
 
+/*
+ * CLI only.
+ *
+ * These scripts live inside the document root, so without this an
+ * unauthenticated HTTP GET could run them: opening a sign-off month early,
+ * mass-emailing faculty, resetting balances, and echoing recipient names and
+ * addresses into the response body (cronLog also echoes). The web server is the
+ * wrong place to enforce it — production runs nginx, which ignores .htaccess —
+ * so the guard belongs in the script itself.
+ */
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 set_time_limit(300);
 
 require_once __DIR__ . '/../config/constants.php';

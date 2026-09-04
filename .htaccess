@@ -11,6 +11,16 @@ Options -Indexes
     Deny from all
 </FilesMatch>
 
+# Database dumps, editor/deploy leftovers and stray backups must never be served.
+# proddump.sql was publicly downloadable and contained the users table (password
+# hashes) plus student records and leave reasons. Note this only protects Apache —
+# production runs nginx and ignores .htaccess, so those files are additionally
+# chmod 600 so the web server user cannot read them at all.
+<FilesMatch "\.(sql|sql\.gz|bak|orig|save|old|swp|swo|dist|log)$|\.bak\.|~$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
 # PHP Security Settings
 php_flag display_errors Off
 php_flag log_errors On

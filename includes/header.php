@@ -15,6 +15,22 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+/*
+ * Enforce the session HERE, before a single byte of HTML is emitted.
+ *
+ * Every page that includes this file requires a login, but each one called
+ * requireRole() AFTER including it — by which point the doctype and the whole
+ * navbar had already been sent. requireLogin()'s redirect therefore could not be
+ * issued ("headers already sent") and only its exit() took effect, so an expired
+ * session rendered a truncated page: navbar visible, no content, no redirect.
+ * Clicking any nav link produced the same stub, which read as "the buttons are
+ * dead" rather than "you have been logged out".
+ *
+ * Running it before output means an expired or missing session lands on the login
+ * page with ?timeout=1, from any page, first click.
+ */
+requireLogin();
+
 // Generate CSRF token for forms
 $csrfToken = generateCSRFToken();
 

@@ -1,0 +1,3 @@
+# Cron scripts are CLI-only (each also guards on PHP_SAPI). Never serve or
+# execute them over HTTP.
+Require all denied

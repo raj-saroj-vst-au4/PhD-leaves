@@ -21,18 +21,71 @@ function isLoggedIn() {
  */
 function requireLogin() {
     if (!isLoggedIn()) {
-        header('Location: ' . BASE_URL . '/login.php');
-        exit();
+        expiredSessionResponse(false);
     }
 
     // Check session timeout
     if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > SESSION_TIMEOUT)) {
         logout();
-        header('Location: ' . BASE_URL . '/login.php?timeout=1');
-        exit();
+        expiredSessionResponse(true);
     }
 
     $_SESSION['last_activity'] = time();
+}
+
+/**
+ * End the request for a caller with no valid session.
+ *
+ * A 302 to the login page is right for a browser navigation but wrong for a
+ * fetch()/XHR: the JSON caller silently follows the redirect, receives the login
+ * page's HTML, fails to parse it and reports "an error occurred" — which tells
+ * the user nothing about having been logged out. So answer JSON callers with a
+ * 401 and a message the existing handlers already surface.
+ */
+function expiredSessionResponse($wasTimeout) {
+    if (wantsJsonResponse()) {
+        if (!headers_sent()) {
+            http_response_code(401);
+            header('Content-Type: application/json');
+        }
+        echo json_encode([
+            'success' => false,
+            'code'    => 'SESSION_EXPIRED',
+            'message' => $wasTimeout
+                ? 'Your session has expired. Please sign in again.'
+                : 'You are not signed in. Please sign in again.',
+            'login_url' => BASE_URL . '/login.php?timeout=1',
+        ]);
+        exit();
+    }
+
+    if (!headers_sent()) {
+        header('Location: ' . BASE_URL . '/login.php' . ($wasTimeout ? '?timeout=1' : ''));
+        exit();
+    }
+
+    // Output already started (a page that checks auth too late). A redirect is no
+    // longer possible, so bounce with a meta refresh rather than leaving a
+    // half-rendered page that looks like broken navigation.
+    $url = htmlspecialchars(BASE_URL . '/login.php' . ($wasTimeout ? '?timeout=1' : ''), ENT_QUOTES);
+    echo '<meta http-equiv="refresh" content="0;url=' . $url . '">'
+       . '<p style="font-family:sans-serif;padding:1rem">Your session has expired. '
+       . '<a href="' . $url . '">Sign in again</a>.</p>';
+    exit();
+}
+
+/** Does this caller want JSON rather than an HTML redirect? */
+function wantsJsonResponse() {
+    // Anything under /api/ is a JSON endpoint by convention in this project.
+    if (strpos($_SERVER['SCRIPT_NAME'] ?? '', '/api/') !== false) {
+        return true;
+    }
+    if (strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'xmlhttprequest') {
+        return true;
+    }
+    $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
+    return $accept !== '' && strpos($accept, 'application/json') !== false
+        && strpos($accept, 'text/html') === false;
 }
 
 /**
