@@ -4,7 +4,21 @@
  * Handles all leave approval workflow operations
  */
 
+// cancelByAdmin() reads Leave::PENDING_STATUSES. Every caller happens to load
+// Leave first, but relying on that makes this file silently order-dependent.
+require_once __DIR__ . '/Leave.php';
+
 class Approval {
+    /**
+     * Written into ta_remarks when the guide's approval also settles the TA
+     * stage because one person holds both roles. Public so the approval-chain
+     * view and the faculty pages can recognise an automatic approval and label
+     * it as such instead of presenting it as a decision someone made by hand.
+     */
+    const TA_AUTO_APPROVED_REMARK =
+        'Auto-approved: the Faculty Guide and TA Coordinator are the same person, '
+        . 'and this was settled by their approval at the Guide stage.';
+
     private $db;
 
     public function __construct($db = null) {
@@ -34,28 +48,50 @@ class Approval {
                 throw new Exception("Leave is not pending guide approval");
             }
 
-            // Check if TA coordinator is assigned
             $hasTA = !empty($leave['ta_coordinator_id']);
+            // One person holding both roles would otherwise be asked to approve
+            // the same application twice, wearing a different hat each time. The
+            // second click carries no new information: the supervisor's consent
+            // and the duty-roster check are being made by the same person in the
+            // same sitting. So the TA stage is settled here and the application
+            // goes straight to the HOD.
+            $taIsGuide = $hasTA
+                && (int) $leave['ta_coordinator_id'] === (int) $leave['faculty_guide_id'];
 
-            if ($hasTA) {
+            if ($taIsGuide) {
+                $newStatus = 'pending_hod';
+                $taStatus = 'approved';
+                // Recorded rather than left blank: the approval chain has to show
+                // WHY that stage was never actioned by hand, or it reads as a
+                // stage that was skipped without authority.
+                $taRemarks = self::TA_AUTO_APPROVED_REMARK;
+                $nextApprover = 'HOD';
+                $message = 'Leave approved. You are also the TA Coordinator for this student, '
+                         . 'so the TA stage was approved automatically. Forwarded to HOD.';
+            } elseif ($hasTA) {
                 $newStatus = 'pending_ta';
                 $taStatus = 'pending';
+                $taRemarks = null;
                 $nextApprover = 'TA Coordinator';
                 $message = 'Leave approved successfully. Forwarded to TA Coordinator.';
             } else {
                 // Skip TA step, go directly to HOD
                 $newStatus = 'pending_hod';
                 $taStatus = 'approved';
+                $taRemarks = 'Auto-approved: no TA Coordinator is assigned to this student.';
                 $nextApprover = 'HOD';
                 $message = 'Leave approved successfully. Forwarded to HOD (no TA Coordinator assigned).';
             }
 
-            // Update leave application
+            // Update leave application. ta_approved_at is stamped alongside an
+            // auto-approval so the stage carries a time as well as a reason.
             $sql = "UPDATE leave_applications
                     SET guide_status = 'approved',
                         guide_remarks = :remarks,
                         guide_approved_at = NOW(),
                         ta_status = :ta_status,
+                        ta_remarks = COALESCE(:ta_remarks, ta_remarks),
+                        ta_approved_at = CASE WHEN :ta_auto = 1 THEN NOW() ELSE ta_approved_at END,
                         status = :new_status,
                         updated_at = NOW()
                     WHERE id = :leave_id";
@@ -64,6 +100,8 @@ class Approval {
             $stmt->execute([
                 ':remarks' => $remarks,
                 ':ta_status' => $taStatus,
+                ':ta_remarks' => $taRemarks,
+                ':ta_auto' => $taStatus === 'approved' ? 1 : 0,
                 ':new_status' => $newStatus,
                 ':leave_id' => $leaveId
             ]);
@@ -72,8 +110,10 @@ class Approval {
             $this->logAction($facultyId, 'guide_approved', $leaveId,
                 "Guide approved leave application ID $leaveId for student {$leave['student_name']}");
 
-            // Send notification to next approver
-            if ($hasTA) {
+            // Send notification to next approver. Note this keys on the status we
+            // just wrote, not on $hasTA — when the guide is also the TA there IS a
+            // TA, but the application has already passed that stage.
+            if ($newStatus === 'pending_ta') {
                 $this->sendNotification($leave['ta_coordinator_id'], 'ta_approval_pending', $leaveId);
             } else {
                 $this->sendNotification(null, 'hod_approval_pending', $leaveId, 'hod');
@@ -563,6 +603,11 @@ class Approval {
                 'remarks' => $leave['ta_remarks'],
                 'no_duty_confirmed' => $leave['ta_no_duty_confirmed'],
                 'approved_at' => $leave['ta_approved_at'],
+                // Settled by the guide's approval rather than by a second click
+                // from the same person. Flagged so a view can label it instead of
+                // string-matching the remark, and so it is never mistaken for a
+                // decision the TA sat down and made separately.
+                'auto_approved' => $leave['ta_remarks'] === self::TA_AUTO_APPROVED_REMARK,
                 'order' => 2
             ];
 
@@ -679,7 +724,7 @@ class Approval {
             }
 
             // Check if leave is in a pending state (can be cancelled)
-            $pendingStatuses = ['pending_guide', 'pending_ta', 'pending_hod', 'pending_admin'];
+            $pendingStatuses = Leave::PENDING_STATUSES;
             if (!in_array($leave['status'], $pendingStatuses)) {
                 throw new Exception("Only pending leaves can be cancelled. Current status: " . $leave['status']);
             }

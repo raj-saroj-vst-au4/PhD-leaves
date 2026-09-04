@@ -82,19 +82,27 @@ class User {
 
         // Check if faculty guide exists (if provided)
         if ($facultyGuideId) {
-            $checkStmt = $this->db->prepare("SELECT id FROM users WHERE id = ? AND is_active = 1");
+            // role = 'faculty' matters as much as is_active: without it any
+            // active user id was accepted here, so a hand-made POST could name
+            // another student, the HOD or an admin as a guide/TA coordinator.
+            $checkStmt = $this->db->prepare(
+                "SELECT id FROM users WHERE id = ? AND role = 'faculty' AND is_active = 1");
             $checkStmt->execute([$facultyGuideId]);
             if (!$checkStmt->fetch()) {
-                throw new Exception("Invalid faculty guide selected - user does not exist or is inactive");
+                throw new Exception("Invalid faculty guide selected - not an active faculty member");
             }
         }
 
         // Check if TA coordinator exists (if provided)
         if ($taCoordinatorId) {
-            $checkStmt = $this->db->prepare("SELECT id FROM users WHERE id = ? AND is_active = 1");
+            // role = 'faculty' matters as much as is_active: without it any
+            // active user id was accepted here, so a hand-made POST could name
+            // another student, the HOD or an admin as a guide/TA coordinator.
+            $checkStmt = $this->db->prepare(
+                "SELECT id FROM users WHERE id = ? AND role = 'faculty' AND is_active = 1");
             $checkStmt->execute([$taCoordinatorId]);
             if (!$checkStmt->fetch()) {
-                throw new Exception("Invalid TA coordinator selected - user does not exist or is inactive");
+                throw new Exception("Invalid TA coordinator selected - not an active faculty member");
             }
         }
 
@@ -411,24 +419,36 @@ class User {
 
             // Validate faculty guide exists if provided
             if ($facultyGuideId) {
-                $checkStmt = $this->db->prepare("SELECT id FROM users WHERE id = ? AND is_active = 1");
+                // role = 'faculty' matters as much as is_active: without it any
+            // active user id was accepted here, so a hand-made POST could name
+            // another student, the HOD or an admin as a guide/TA coordinator.
+            $checkStmt = $this->db->prepare(
+                "SELECT id FROM users WHERE id = ? AND role = 'faculty' AND is_active = 1");
                 $checkStmt->execute([$facultyGuideId]);
                 if (!$checkStmt->fetch()) {
-                    throw new Exception("Invalid faculty guide selected - user does not exist or is inactive");
+                    throw new Exception("Invalid faculty guide selected - not an active faculty member");
                 }
             }
 
             // Validate TA coordinator exists if provided
             if ($taCoordinatorId) {
-                $checkStmt = $this->db->prepare("SELECT id FROM users WHERE id = ? AND is_active = 1");
+                // role = 'faculty' matters as much as is_active: without it any
+            // active user id was accepted here, so a hand-made POST could name
+            // another student, the HOD or an admin as a guide/TA coordinator.
+            $checkStmt = $this->db->prepare(
+                "SELECT id FROM users WHERE id = ? AND role = 'faculty' AND is_active = 1");
                 $checkStmt->execute([$taCoordinatorId]);
                 if (!$checkStmt->fetch()) {
-                    throw new Exception("Invalid TA coordinator selected - user does not exist or is inactive");
+                    throw new Exception("Invalid TA coordinator selected - not an active faculty member");
                 }
             }
 
-            // Get student ID from user ID
-            $studentStmt = $this->db->prepare("SELECT id FROM students WHERE user_id = ?");
+            // Read the current values before overwriting them, so the audit entry
+            // can say what actually changed. It used to log the bare sentence
+            // "Faculty guide and TA coordinator updated", which cannot answer the
+            // one question anyone asks of it later: changed from what, to what?
+            $studentStmt = $this->db->prepare(
+                "SELECT id, faculty_guide_id, ta_coordinator_id FROM students WHERE user_id = ?");
             $studentStmt->execute([$userId]);
             $student = $studentStmt->fetch();
 
@@ -444,7 +464,13 @@ class User {
             $result = $updateStmt->execute([$facultyGuideId, $taCoordinatorId, $studentId]);
 
             if ($result) {
-                $this->logAction($userId, 'student_guide_ta_updated', 'students', "Faculty guide and TA coordinator updated");
+                $fmt = function ($v) { return $v === null ? 'none' : (int) $v; };
+                $this->logAction($userId, 'student_guide_ta_updated', 'students', sprintf(
+                    'student_id %d: guide %s -> %s, ta %s -> %s',
+                    $studentId,
+                    $fmt($student['faculty_guide_id']), $fmt($facultyGuideId),
+                    $fmt($student['ta_coordinator_id']), $fmt($taCoordinatorId)
+                ));
             }
 
             return $result;

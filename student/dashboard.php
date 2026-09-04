@@ -52,7 +52,7 @@ $recentLeaves = array_slice($recentLeaves, 0, 5);
 
 // Get pending applications count
 $pendingCount = count(array_filter($recentLeaves, function($leave) {
-    return in_array($leave['status'], ['pending_guide', 'pending_ta', 'pending_hod', 'pending_admin']);
+    return in_array($leave['status'], Leave::PENDING_STATUSES);
 }));
 
 // Get upcoming holidays

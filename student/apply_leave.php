@@ -11,6 +11,7 @@ require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../classes/User.php';
+require_once __DIR__ . '/../classes/GuideTAChange.php';
 require_once __DIR__ . '/../includes/EmailService.php';
 
 // Must run before the POST handler below so only students can submit applications.
@@ -21,6 +22,11 @@ $error = '';
 $hasGuide = false;
 $hasTA = false;
 $hasRequiredAssignments = false;
+
+$guideTAChange = new GuideTAChange();
+// A change already with the office. Any application made now queues behind that
+// one decision rather than opening a second competing request.
+$pendingRoutingRequest = $guideTAChange->pendingForStudent(getCurrentStudentId());
 
 // Handle form submission BEFORE outputting HTML
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -78,17 +84,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        // Who will review this application is settled before anything else — that
+        // is the point of the confirmation step. A student with a pending change
+        // is not asked again; their application simply queues behind it.
+        $routingAnswer = sanitize($_POST['routing_ok'] ?? '');
+        $wantsRoutingChange = !$pendingRoutingRequest && $routingAnswer === 'no';
+        $newGuideId = $_POST['new_faculty_guide_id'] ?? '';
+        $newTaId = $_POST['new_ta_coordinator_id'] ?? '';
+        $routingReason = sanitize($_POST['routing_reason'] ?? '');
+
         // Validation
         if ($error) {
             // Error already set from file upload
-        } elseif (!$hasRequiredAssignments) {
-            if (!$hasGuide && !$hasTA) {
-                $error = 'You cannot apply for leave without a Faculty Guide and TA Coordinator assigned. Please contact staff PhD Coordinator.';
-            } elseif (!$hasGuide) {
-                $error = 'You cannot apply for leave without a Faculty Guide assigned. Please contact staff PhD Coordinator.';
-            } else {
-                $error = 'You cannot apply for leave without a TA Coordinator assigned. Please contact staff PhD Coordinator.';
-            }
+        } elseif (!$pendingRoutingRequest && $routingAnswer === '') {
+            $error = 'Please confirm whether your Faculty Guide and TA Coordinator are correct.';
+        } elseif (!$pendingRoutingRequest && $routingAnswer === 'yes' && !$hasRequiredAssignments) {
+            // "These are correct" cannot be true when there is nothing assigned.
+            $missing = !$hasGuide && !$hasTA ? 'Faculty Guide or TA Coordinator'
+                     : (!$hasGuide ? 'Faculty Guide' : 'TA Coordinator');
+            $error = "You have no $missing assigned, so they cannot be correct. "
+                   . 'Choose "No, these need to be changed" and tell the office who they should be.';
+        } elseif ($wantsRoutingChange && empty($newGuideId) && empty($newTaId)) {
+            $error = 'Please select the Faculty Guide and/or TA Coordinator you should be assigned to.';
         } elseif (empty($leaveType) || empty($startDate) || empty($endDate) || empty($reason)) {
             $error = 'All fields are required';
         } elseif (!in_array($leaveType, ['personal', 'medical', 'academic'])) {
@@ -105,14 +122,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $leave = new Leave();
                 $studentId = getCurrentStudentId();
+                $pdo = getDBConnection();
 
-                $result = $leave->apply($studentId, [
-                    'leave_type' => $leaveType,
-                    'start_date' => $startDate,
-                    'end_date' => $endDate,
-                    'reason' => $reason,
-                    'supporting_document' => $supportingDocument
-                ]);
+                // The change request and the application it was raised on are
+                // written together. If the application fails validation inside
+                // Leave::apply, an orphaned pending request would otherwise be
+                // left behind — and uk_one_pending would then block the student
+                // from ever raising another.
+                $pdo->beginTransaction();
+                try {
+                    $routingRequestId = $pendingRoutingRequest
+                        ? (int) $pendingRoutingRequest['id']
+                        : null;
+
+                    if ($wantsRoutingChange) {
+                        $routingRequestId = $guideTAChange->create(
+                            $studentId,
+                            $newGuideId !== '' ? (int) $newGuideId : null,
+                            $newTaId !== '' ? (int) $newTaId : null,
+                            $routingReason
+                        );
+                    }
+
+                    $result = $leave->apply($studentId, [
+                        'leave_type' => $leaveType,
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                        'reason' => $reason,
+                        'supporting_document' => $supportingDocument,
+                        'routing_request_id' => $routingRequestId
+                    ]);
+                    $pdo->commit();
+                } catch (Exception $inner) {
+                    $pdo->rollBack();
+                    throw $inner;
+                }
 
                 if ($result['success']) {
                     // Send email notification to the first approver
@@ -121,8 +165,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($leaveDetails) {
                             $emailService = new EmailService();
 
-                            // Determine who to notify based on the leave status
-                            if ($leaveDetails['status'] === 'pending_guide' && !empty($leaveDetails['guide_email'])) {
+                            // A held application has no approver yet — the admin
+                            // is the one who needs to hear about it, and only when
+                            // this request is new. Queuing behind an existing
+                            // request must not re-notify.
+                            if ($leaveDetails['status'] === 'pending_routing') {
+                                if ($wantsRoutingChange) {
+                                    $emailService->sendGuideTAChangeRequest(
+                                        $guideTAChange->getById($routingRequestId));
+                                }
+                            } elseif ($leaveDetails['status'] === 'pending_guide' && !empty($leaveDetails['guide_email'])) {
                                 $emailService->sendLeaveApplication($leaveDetails, 'guide');
                             } elseif ($leaveDetails['status'] === 'pending_ta' && !empty($leaveDetails['ta_coordinator_email'])) {
                                 $emailService->sendLeaveApplication($leaveDetails, 'ta_coordinator');
@@ -144,6 +196,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
 
                     $successMsg = "Leave application submitted successfully! ({$result['total_days']} days)";
+                    if (!empty($result['held_for_routing'])) {
+                        $successMsg = "Leave application submitted ({$result['total_days']} days). "
+                            . 'It is on hold until the office decides on your Faculty Guide / TA '
+                            . 'Coordinator change; you will be emailed either way, and the '
+                            . 'application is then sent for approval automatically.';
+                    }
                     if (isset($result['warning'])) {
                         $successMsg .= " Warning: " . $result['warning'];
                     }
@@ -172,7 +230,7 @@ $pageTitle = 'Apply for Leave';
 require_once __DIR__ . '/../includes/header.php';
 
 // Get student ID and details if not already fetched (when form wasn't submitted)
-if (!$studentId) {
+if (!$studentId || empty($studentDetails)) {
     $userId = getCurrentUserId();
     $studentId = getCurrentStudentId();
     $userClass = new User();
@@ -181,6 +239,18 @@ if (!$studentId) {
     $hasTA = !empty($studentDetails['ta_coordinator_id']);
     $hasRequiredAssignments = $hasGuide && $hasTA;
 }
+
+// Only real, active faculty are offerable. Anything wider is what let a student
+// name themselves as their own guide before this went through the office.
+$selectableFaculty = $guideTAChange->selectableFaculty();
+
+// What the student last answered, so a validation error does not silently reset
+// their choice back to "correct" and hide the change they were making.
+$postedRoutingAnswer = sanitize($_POST['routing_ok'] ?? '');
+$postedGuideId = $_POST['new_faculty_guide_id'] ?? '';
+$postedTaId = $_POST['new_ta_coordinator_id'] ?? '';
+$postedRoutingReason = sanitize($_POST['routing_reason'] ?? '');
+$changeSectionOpen = $postedRoutingAnswer === 'no' || (!$hasRequiredAssignments && !$pendingRoutingRequest);
 
 // Get current leave balances
 try {
@@ -206,29 +276,18 @@ try {
 
     <?php displayFlashMessage(); ?>
 
-    <!-- Missing Guide/TA Alert -->
-    <?php if (!$hasRequiredAssignments): ?>
-        <div class="mb-6 p-4 bg-red-50 border-l-4 border-red-500 rounded-lg">
-            <div class="flex items-start">
-                <div class="flex-shrink-0">
-                    <i class="fas fa-exclamation-triangle text-red-600 text-lg mt-0.5"></i>
-                </div>
-                <div class="ml-3">
-                    <h3 class="text-sm font-medium text-red-800">Missing Required Assignments</h3>
-                    <div class="mt-2 text-sm text-red-700">
-                        <p>You cannot apply for leave until the following are assigned:</p>
-                        <ul class="list-disc list-inside mt-2">
-                            <?php if (!$hasGuide): ?>
-                                <li>Faculty Guide</li>
-                            <?php endif; ?>
-                            <?php if (!$hasTA): ?>
-                                <li>TA Coordinator</li>
-                            <?php endif; ?>
-                        </ul>
-                        <p class="mt-2">Please contact Staff Phd Coordinator to get these assignments completed.</p>
-                    </div>
-                </div>
-            </div>
+    <?php if ($pendingRoutingRequest): ?>
+        <!-- A change is already with the office: do not offer to raise a second. -->
+        <div class="mb-6 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-lg">
+            <h3 class="text-sm font-semibold text-amber-900">
+                <i class="fas fa-hourglass-half mr-1"></i>Guide / TA change awaiting the office
+            </h3>
+            <p class="mt-2 text-sm text-amber-800">
+                You asked for your Faculty Guide / TA Coordinator to be changed on
+                <?php echo formatDate($pendingRoutingRequest['created_at']); ?> and the office has
+                not decided yet. Anything you apply for now is held until they do, then sent for
+                approval automatically. You will be emailed the decision.
+            </p>
         </div>
     <?php endif; ?>
 
@@ -247,6 +306,120 @@ try {
                 <form method="POST" action="" id="leaveForm" class="space-y-6" enctype="multipart/form-data">
                     <?php echo getCSRFField(); ?>
 
+                    <?php if (!$pendingRoutingRequest): ?>
+                    <!--
+                        Who reviews this application, confirmed before it is made.
+                        These two people are the whole approval chain, and a student
+                        assigned to the wrong ones has no other way to say so — the
+                        fields are read-only on the profile page precisely so that a
+                        student cannot re-route their own approvals unsupervised.
+                    -->
+                    <div class="p-4 border border-gray-200 rounded-lg bg-gray-50">
+                        <h3 class="text-sm font-semibold text-gray-900 mb-3">
+                            <i class="fas fa-user-check mr-1 text-blue-600"></i>
+                            Who will review this application?
+                        </h3>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                            <div class="bg-white p-3 rounded border border-gray-200">
+                                <p class="text-xs text-gray-500 uppercase tracking-wide">Faculty Guide</p>
+                                <p class="text-sm font-medium <?php echo $hasGuide ? 'text-gray-900' : 'text-red-600'; ?>">
+                                    <?php echo $hasGuide ? sanitize($studentDetails['guide_name']) : 'Not assigned'; ?>
+                                </p>
+                            </div>
+                            <div class="bg-white p-3 rounded border border-gray-200">
+                                <p class="text-xs text-gray-500 uppercase tracking-wide">TA Coordinator</p>
+                                <p class="text-sm font-medium <?php echo $hasTA ? 'text-gray-900' : 'text-red-600'; ?>">
+                                    <?php echo $hasTA ? sanitize($studentDetails['ta_coordinator_name']) : 'Not assigned'; ?>
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <label class="flex items-start gap-2 <?php echo $hasRequiredAssignments ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'; ?>">
+                                <input type="radio" name="routing_ok" value="yes" class="mt-1"
+                                       onchange="toggleRoutingChange()"
+                                       <?php echo $hasRequiredAssignments ? '' : 'disabled'; ?>
+                                       <?php echo $postedRoutingAnswer === 'yes' ? 'checked' : ''; ?>
+                                       required>
+                                <span class="text-sm text-gray-800">
+                                    Yes, these are correct &mdash; send my application to them.
+                                    <?php if (!$hasRequiredAssignments): ?>
+                                        <span class="block text-xs text-red-600">
+                                            Not available: you have no
+                                            <?php echo !$hasGuide && !$hasTA ? 'Faculty Guide or TA Coordinator'
+                                                : (!$hasGuide ? 'Faculty Guide' : 'TA Coordinator'); ?> assigned.
+                                        </span>
+                                    <?php endif; ?>
+                                </span>
+                            </label>
+
+                            <label class="flex items-start gap-2 cursor-pointer">
+                                <input type="radio" name="routing_ok" value="no" class="mt-1"
+                                       onchange="toggleRoutingChange()"
+                                       <?php echo $changeSectionOpen ? 'checked' : ''; ?>
+                                       required>
+                                <span class="text-sm text-gray-800">
+                                    No, these need to be changed.
+                                    <span class="block text-xs text-gray-500">
+                                        The office approves the change first, then your application is
+                                        sent for approval automatically.
+                                    </span>
+                                </span>
+                            </label>
+                        </div>
+
+                        <div id="routingChangeSection" class="<?php echo $changeSectionOpen ? '' : 'hidden'; ?> mt-4 pt-4 border-t border-gray-200 space-y-4">
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="new_faculty_guide_id" class="block text-sm font-medium text-gray-700 mb-1">
+                                        Faculty Guide should be
+                                    </label>
+                                    <select id="new_faculty_guide_id" name="new_faculty_guide_id"
+                                            class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                        <option value="">-- None --</option>
+                                        <?php foreach ($selectableFaculty as $f): ?>
+                                            <option value="<?php echo (int) $f['id']; ?>"
+                                                <?php echo (string) $postedGuideId === (string) $f['id']
+                                                    || ($postedGuideId === '' && ($studentDetails['faculty_guide_id'] ?? '') == $f['id'])
+                                                    ? 'selected' : ''; ?>>
+                                                <?php echo sanitize($f['name']); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="new_ta_coordinator_id" class="block text-sm font-medium text-gray-700 mb-1">
+                                        TA Coordinator should be
+                                    </label>
+                                    <select id="new_ta_coordinator_id" name="new_ta_coordinator_id"
+                                            class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                        <option value="">-- None --</option>
+                                        <?php foreach ($selectableFaculty as $f): ?>
+                                            <option value="<?php echo (int) $f['id']; ?>"
+                                                <?php echo (string) $postedTaId === (string) $f['id']
+                                                    || ($postedTaId === '' && ($studentDetails['ta_coordinator_id'] ?? '') == $f['id'])
+                                                    ? 'selected' : ''; ?>>
+                                                <?php echo sanitize($f['name']); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="routing_reason" class="block text-sm font-medium text-gray-700 mb-1">
+                                    Why does this need changing? <span class="text-red-500">*</span>
+                                </label>
+                                <textarea id="routing_reason" name="routing_reason" rows="2"
+                                          minlength="10"
+                                          class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                                          placeholder="e.g. I changed supervisor in June; Prof. X is now my guide."><?php echo $postedRoutingReason; ?></textarea>
+                                <p class="mt-1 text-xs text-gray-500">The office sees this when deciding.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
+
                     <!-- Leave Type -->
                     <div>
                         <label for="leave_type" class="block text-sm font-medium text-gray-700 mb-2">
@@ -258,7 +431,6 @@ try {
                             class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                             required
                             onchange="updateBalanceDisplay()"
-                            <?php echo !$hasRequiredAssignments ? 'disabled' : ''; ?>
                         >
                             <option value="">Select Leave Type</option>
                             <option value="personal">Personal Leave</option>
@@ -281,8 +453,7 @@ try {
                                 class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 required
                                 onchange="calculateDays()"
-                                <?php echo !$hasRequiredAssignments ? 'disabled' : ''; ?>
-                            >
+                                >
                         </div>
                         <div>
                             <label for="end_date" class="block text-sm font-medium text-gray-700 mb-2">
@@ -296,8 +467,7 @@ try {
                                 class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 required
                                 onchange="calculateDays()"
-                                <?php echo !$hasRequiredAssignments ? 'disabled' : ''; ?>
-                            >
+                                >
                         </div>
                     </div>
 
@@ -323,7 +493,6 @@ try {
                             placeholder="Please provide a detailed reason for your leave..."
                             required
                             minlength="10"
-                            <?php echo !$hasRequiredAssignments ? 'disabled' : ''; ?>
                         ><?php echo sanitize($_POST['reason'] ?? ''); ?></textarea>
                         <p class="mt-1 text-sm text-gray-500">Minimum 10 characters required</p>
                     </div>
@@ -346,8 +515,7 @@ try {
                                             accept=".pdf,application/pdf"
                                             class="sr-only"
                                             onchange="updateFileName(this)"
-                                            <?php echo !$hasRequiredAssignments ? 'disabled' : ''; ?>
-                                        >
+                                                        >
                                     </label>
                                     <p class="pl-1">or drag and drop</p>
                                 </div>
@@ -368,8 +536,7 @@ try {
                         </a>
                         <button
                             type="submit"
-                            class="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors <?php echo !$hasRequiredAssignments ? 'opacity-50 cursor-not-allowed' : ''; ?>"
-                            <?php echo !$hasRequiredAssignments ? 'disabled' : ''; ?>
+                            class="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
                         >
                             <i class="fas fa-paper-plane mr-2"></i>Submit Application
                         </button>
@@ -435,6 +602,24 @@ const balanceData = {
     academic: <?php echo $balance['academic_leaves'] ?? 0; ?>
 };
 
+/**
+ * Show the guide/TA change fields only when the student says the routing is
+ * wrong. The reason is required in that case and must NOT be required otherwise,
+ * or the browser blocks submission on a hidden field with no visible explanation.
+ */
+function toggleRoutingChange() {
+    const section = document.getElementById('routingChangeSection');
+    if (!section) { return; }   // student already has a change with the office
+    const wantsChange = document.querySelector('input[name="routing_ok"][value="no"]').checked;
+    const reason = document.getElementById('routing_reason');
+    section.classList.toggle('hidden', !wantsChange);
+    if (wantsChange) {
+        reason.setAttribute('required', 'required');
+    } else {
+        reason.removeAttribute('required');
+    }
+}
+
 // Update balance display based on selected leave type
 function updateBalanceDisplay() {
     const leaveType = document.getElementById('leave_type').value;
@@ -492,6 +677,10 @@ function updateFileName(input) {
         fileNameDisplay.classList.add('hidden');
     }
 }
+
+// Reflect the server-rendered state on load: a validation error re-renders the
+// page with the change section open, and its reason field must be required again.
+document.addEventListener('DOMContentLoaded', toggleRoutingChange);
 
 // Calculate total leave days (including weekends and holidays)
 function calculateDays() {

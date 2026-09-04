@@ -43,7 +43,7 @@ $allLeaves = $leaveClass->getAll([
 // application spanning the same dates, so counting both would double the totals.
 $allLeaves = array_filter($allLeaves, fn($l) => $l['status'] !== 'combined');
 
-$pendingStatuses = ['pending_guide', 'pending_ta', 'pending_hod', 'pending_admin'];
+$pendingStatuses = Leave::PENDING_STATUSES;
 $approvedCount = count(array_filter($allLeaves, fn($l) => $l['status'] === 'approved'));
 $pendingCount  = count(array_filter($allLeaves, fn($l) => in_array($l['status'], $pendingStatuses, true)));
 

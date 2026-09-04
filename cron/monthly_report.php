@@ -123,7 +123,7 @@ try {
 
     $approvedLeaves = array_filter($leaves, fn($l) => $l['status'] === 'approved');
     $rejectedLeaves = array_filter($leaves, fn($l) => $l['status'] === 'rejected');
-    $pendingLeaves = array_filter($leaves, fn($l) => in_array($l['status'], ['pending_guide', 'pending_ta', 'pending_hod', 'pending_admin']));
+    $pendingLeaves = array_filter($leaves, fn($l) => in_array($l['status'], Leave::PENDING_STATUSES));
 
     // Keys matching what sendMonthlyReport() expects
     $reportData['month'] = $today->format('F Y');

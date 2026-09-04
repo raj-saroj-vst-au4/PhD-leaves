@@ -103,6 +103,9 @@ function timeAgo($datetime) {
  */
 function getStatusBadge($status) {
     $badges = [
+        // Held before the chain starts: the student flagged their guide/TA as
+        // wrong, and the office has to settle that before anyone can review.
+        'pending_routing' => '<span class="badge" style="background-color:#c2410c;color:white;"><i class="fas fa-user-slash mr-1 text-xs"></i>Awaiting Guide/TA Change</span>',
         'pending_guide' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending Guide</span>',
         'pending_ta' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending TA</span>',
         'pending_hod' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending HOD</span>',

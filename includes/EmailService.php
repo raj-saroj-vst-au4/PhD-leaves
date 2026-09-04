@@ -525,6 +525,131 @@ class EmailService {
     }
 
     /**
+     * Tell the admins a student has asked for their guide / TA to be corrected.
+     *
+     * This is time-sensitive in a way an ordinary notification is not: the
+     * student's leave application is HELD until someone decides, so the email
+     * says so plainly rather than reading as something to get to eventually.
+     *
+     * @param array $request A row from GuideTAChange::getById()
+     * @return bool
+     */
+    public function sendGuideTAChangeRequest($request)
+    {
+        if (empty($request)) {
+            return false;
+        }
+        $admins = $this->getAdminEmails();
+        if (empty($admins)) {
+            logError('Cannot send guide/TA change request: no admin emails found');
+            return false;
+        }
+
+        $subject = 'Approval needed: guide/TA change - ' . $request['student_name']
+                 . ' - ' . SITE_NAME;
+
+        // "unchanged" rather than a repeated name: the admin needs to see at a
+        // glance which of the two is actually being asked about.
+        $fmt = function ($current, $requested) {
+            $current = $current ?: 'Not assigned';
+            $requested = $requested ?: 'None';
+            return $current === $requested
+                ? htmlspecialchars($current) . ' <i>(unchanged)</i>'
+                : htmlspecialchars($current) . ' &rarr; <b>' . htmlspecialchars($requested) . '</b>';
+        };
+
+        $placeholders = [
+            '{STUDENT_NAME}'  => htmlspecialchars($request['student_name']),
+            '{ROLL_NUMBER}'   => htmlspecialchars($request['roll_number']),
+            '{GUIDE_CHANGE}'  => $fmt($request['current_guide_name'], $request['requested_guide_name']),
+            '{TA_CHANGE}'     => $fmt($request['current_ta_name'], $request['requested_ta_name']),
+            '{REASON}'        => nl2br(htmlspecialchars($request['reason'])),
+            '{ACTION_URL}'    => $this->getAbsoluteUrl('/admin/guide_ta_requests.php'),
+            '{SITE_NAME}'     => SITE_NAME,
+        ];
+
+        $body = $this->loadTemplate('guide_ta_change_request.html', $placeholders);
+
+        $success = true;
+        foreach ($admins as $admin) {
+            if (!$this->sendEmail($admin['email'], $subject, $body,
+                    'guide_ta_change_request', $request['id'], $admin['name'])) {
+                $success = false;
+            }
+        }
+        return $success;
+    }
+
+    /**
+     * Tell the student what the office decided, and what happened to the
+     * applications that were waiting on it.
+     *
+     * @param array $request   A row from GuideTAChange::getById(), post-decision
+     * @param array $released  Leave ids now in the approval chain
+     * @param array $cancelled Leave ids cancelled for want of a guide
+     * @return bool
+     */
+    public function sendGuideTAChangeDecision($request, array $released = [], array $cancelled = [])
+    {
+        if (empty($request) || empty($request['student_email'])) {
+            return false;
+        }
+
+        $approved = $request['status'] === 'approved';
+        $subject = ($approved ? 'Approved' : 'Not approved')
+                 . ': your guide/TA change request - ' . SITE_NAME;
+
+        if ($approved) {
+            $outcome = 'The office has <b>approved</b> your request. Your records now show:';
+            $detail = '<ul>'
+                . '<li>Faculty Guide: <b>'
+                . htmlspecialchars($request['requested_guide_name'] ?: 'Not assigned') . '</b></li>'
+                . '<li>TA Coordinator: <b>'
+                . htmlspecialchars($request['requested_ta_name'] ?: 'Not assigned') . '</b></li>'
+                . '</ul>';
+        } else {
+            // Say what IS in force, not just that the answer was no — otherwise
+            // the student is left guessing who their approver now is.
+            $outcome = 'The office has <b>not approved</b> your request. '
+                     . 'Your Faculty Guide and TA Coordinator are unchanged:';
+            $detail = '<ul>'
+                . '<li>Faculty Guide: <b>'
+                . htmlspecialchars($request['current_guide_name'] ?: 'Not assigned') . '</b></li>'
+                . '<li>TA Coordinator: <b>'
+                . htmlspecialchars($request['current_ta_name'] ?: 'Not assigned') . '</b></li>'
+                . '</ul>';
+        }
+
+        if ($released) {
+            $detail .= '<p>' . count($released) . ' leave application(s) held for this decision '
+                     . 'have now been sent for approval.</p>';
+        }
+        if ($cancelled) {
+            $detail .= '<p style="color:#b91c1c">' . count($cancelled) . ' leave application(s) '
+                     . 'could not be sent for approval because you still have no Faculty Guide '
+                     . 'assigned, and have been cancelled. Please contact the PhD office.</p>';
+        }
+
+        $remarks = trim((string) ($request['admin_remarks'] ?? ''));
+
+        $placeholders = [
+            '{STUDENT_NAME}' => htmlspecialchars($request['student_name']),
+            '{OUTCOME}'      => $outcome,
+            '{DETAIL}'       => $detail,
+            '{REMARKS}'      => $remarks !== ''
+                ? '<div class="note"><b>Office remarks:</b><br>' . nl2br(htmlspecialchars($remarks)) . '</div>'
+                : '',
+            '{ACTION_URL}'   => $this->getAbsoluteUrl('/student/leave_history.php'),
+            '{SITE_NAME}'    => SITE_NAME,
+        ];
+
+        $body = $this->loadTemplate('guide_ta_change_decision.html', $placeholders);
+
+        return $this->sendEmail($request['student_email'], $subject, $body,
+            'guide_ta_change_decision', $request['id'], $request['student_name']);
+    }
+
+    /**
      * Send monthly report to admins
      * @param array $admins Array of admin data
      * @param array $reportData Report statistics

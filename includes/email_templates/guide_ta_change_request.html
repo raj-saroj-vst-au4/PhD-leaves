@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guide / TA change request</title>
+    <style>
+        body { margin:0; padding:0; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+               background-color:#f3f4f6; color:#1f2937; }
+        .wrap { max-width:640px; margin:0 auto; padding:24px 16px; }
+        .card { background:#ffffff; border-radius:8px; overflow:hidden;
+                box-shadow:0 1px 3px rgba(0,0,0,.1); }
+        .head { background:#c2410c; color:#ffffff; padding:20px 24px; }
+        .head h1 { margin:0; font-size:20px; }
+        .head p { margin:6px 0 0; font-size:13px; opacity:.9; }
+        .body { padding:24px; font-size:14px; line-height:1.6; }
+        .note { background:#fff7ed; border-left:4px solid #c2410c; padding:12px 14px;
+                border-radius:4px; font-size:13px; margin:16px 0; }
+        table { width:100%; border-collapse:collapse; margin:18px 0; font-size:13px; }
+        th { background:#f3f4f6; text-align:left; padding:8px 10px; font-size:11px;
+             text-transform:uppercase; letter-spacing:.03em; color:#6b7280; width:38%; }
+        td { padding:8px 10px; border-bottom:1px solid #e5e7eb; }
+        .btn { display:inline-block; background:#c2410c; color:#ffffff !important;
+               text-decoration:none; padding:12px 22px; border-radius:6px;
+               font-weight:600; font-size:14px; }
+        .foot { padding:16px 24px; background:#f9fafb; color:#6b7280; font-size:12px; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+    <div class="card">
+        <div class="head">
+            <h1>Guide / TA change request</h1>
+            <p>{STUDENT_NAME} ({ROLL_NUMBER})</p>
+        </div>
+        <div class="body">
+            <p>A student has reported that their Faculty Guide or TA Coordinator is wrong.</p>
+
+            <div class="note">
+                Their leave application is <b>on hold</b> until this is decided. Approving or
+                rejecting it releases the application into the normal approval chain either way.
+            </div>
+
+            <table>
+                <tr><th>Faculty Guide</th><td>{GUIDE_CHANGE}</td></tr>
+                <tr><th>TA Coordinator</th><td>{TA_CHANGE}</td></tr>
+                <tr><th>Student&rsquo;s reason</th><td>{REASON}</td></tr>
+            </table>
+
+            <p style="text-align:center;margin:26px 0 8px">
+                <a class="btn" href="{ACTION_URL}">Review this request</a>
+            </p>
+        </div>
+        <div class="foot">
+            This is an automated message from {SITE_NAME}. Please do not reply.
+        </div>
+    </div>
+</div>
+</body>
+</html>

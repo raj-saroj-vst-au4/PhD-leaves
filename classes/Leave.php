@@ -5,6 +5,27 @@
  */
 
 class Leave {
+    /**
+     * Every status in which an application is still in flight — it counts
+     * against the balance, shows as pending on a dashboard, and is not a
+     * finished decision.
+     *
+     * This list was copy-pasted across eight files and had to be edited in all
+     * of them at once to stay correct; 'pending_routing' is the fifth member and
+     * the first added since. Keep it here so a sixth cannot be half-applied.
+     * Note this is NOT the set a guide or TA is waiting on — see
+     * cron/daily_pending_reminder.php, which deliberately reminds only about
+     * pending_guide and pending_ta.
+     */
+    const PENDING_STATUSES = [
+        'pending_routing', 'pending_guide', 'pending_ta', 'pending_hod', 'pending_admin'
+    ];
+
+    /** The same list as a quoted SQL fragment for IN (...) clauses. */
+    public static function pendingStatusSql() {
+        return "'" . implode("','", self::PENDING_STATUSES) . "'";
+    }
+
     private $db;
 
     public function __construct($db = null) {
@@ -55,32 +76,37 @@ class Leave {
             $studentStmt->execute([':student_id' => $studentId]);
             $student = $studentStmt->fetch();
 
-            // Validate that both guide and TA are assigned
-            if (empty($student['faculty_guide_id'])) {
-                throw new Exception("Cannot apply for leave: No Faculty Guide assigned. Please contact the admin.");
-            }
-            if (empty($student['ta_coordinator_id'])) {
-                throw new Exception("Cannot apply for leave: No TA Coordinator assigned. Please contact the admin.");
+            // A guide/TA correction raised with this application holds it at
+            // pending_routing until the admin decides. The assignment check below
+            // is waived in that case: asking for the assignment to be corrected is
+            // exactly how a student who has none is supposed to get moving, so
+            // refusing them here would be a dead end.
+            $routingRequestId = !empty($data['routing_request_id'])
+                ? (int) $data['routing_request_id'] : null;
+
+            if (!$routingRequestId) {
+                if (empty($student['faculty_guide_id'])) {
+                    throw new Exception("Cannot apply for leave: No Faculty Guide assigned. Please contact the admin.");
+                }
+                if (empty($student['ta_coordinator_id'])) {
+                    throw new Exception("Cannot apply for leave: No TA Coordinator assigned. Please contact the admin.");
+                }
             }
 
-            // Determine initial status based on assigned approvers
-            $sameGuideAndTA = $student['faculty_guide_id'] == $student['ta_coordinator_id'];
-
-            if ($sameGuideAndTA) {
-                // Guide and TA are the same person - skip guide step, go directly to TA
-                $initialStatus = 'pending_ta';
-                $guideStatus = 'approved'; // Auto-approve guide step (same person will approve as TA)
-            } else {
-                // Different guide and TA - start with guide approval
-                $initialStatus = 'pending_guide';
-                $guideStatus = 'pending';
-            }
+            // Always enter at the guide stage. When one person is both guide and
+            // TA their single approval settles the TA stage too, but that happens
+            // in Approval::approveByGuide once they have actually approved —
+            // not by pre-approving the guide stage here. The difference matters:
+            // the supervisor's own decision is what ends up recorded, rather than
+            // a stage the system filled in on their behalf before they saw it.
+            $initialStatus = $routingRequestId ? 'pending_routing' : 'pending_guide';
+            $guideStatus = 'pending';
             $taStatus = 'pending';
 
             // Insert leave application
             $sql = "INSERT INTO leave_applications
-                    (student_id, leave_type, start_date, end_date, total_days, reason, status, guide_status, ta_status, hod_status, adjacent_leave_id, supporting_document)
-                    VALUES (:student_id, :leave_type, :start_date, :end_date, :total_days, :reason, :status, :guide_status, :ta_status, 'pending', :adjacent_leave_id, :supporting_document)";
+                    (student_id, leave_type, start_date, end_date, total_days, reason, status, guide_status, ta_status, hod_status, adjacent_leave_id, supporting_document, routing_request_id)
+                    VALUES (:student_id, :leave_type, :start_date, :end_date, :total_days, :reason, :status, :guide_status, :ta_status, 'pending', :adjacent_leave_id, :supporting_document, :routing_request_id)";
 
             $stmt = $this->db->prepare($sql);
             $stmt->execute([
@@ -94,7 +120,8 @@ class Leave {
                 ':guide_status' => $guideStatus,
                 ':ta_status' => $taStatus,
                 ':adjacent_leave_id' => $adjacentLeaveId,
-                ':supporting_document' => $data['supporting_document'] ?? null
+                ':supporting_document' => $data['supporting_document'] ?? null,
+                ':routing_request_id' => $routingRequestId
             ]);
 
             $leaveId = $this->db->lastInsertId();
@@ -104,6 +131,9 @@ class Leave {
             if ($adjacentLeaveId) {
                 $logMessage .= " (adjacent to leave ID $adjacentLeaveId)";
             }
+            if ($routingRequestId) {
+                $logMessage .= " (held pending guide/TA change request ID $routingRequestId)";
+            }
             $this->logAction($studentId, 'leave_applied', $logMessage);
 
             return [
@@ -111,7 +141,8 @@ class Leave {
                 'leave_id' => $leaveId,
                 'total_days' => $totalDays,
                 'warning' => $warningMessage,
-                'adjacent_leave_id' => $adjacentLeaveId
+                'adjacent_leave_id' => $adjacentLeaveId,
+                'held_for_routing' => $routingRequestId !== null
             ];
 
         } catch (PDOException $e) {
@@ -273,7 +304,7 @@ class Leave {
     public function getPendingLeaveDays($studentId, $leaveType = null) {
         $sql = "SELECT SUM(total_days) as pending_days FROM leave_applications
                 WHERE student_id = :student_id
-                AND status IN ('pending_guide', 'pending_ta', 'pending_hod', 'pending_admin')";
+                AND status IN (" . self::pendingStatusSql() . ")";
 
         if ($leaveType) {
             $sql .= " AND leave_type = :leave_type";
@@ -664,7 +695,7 @@ class Leave {
                 JOIN students s ON la.student_id = s.id
                 JOIN users u ON s.user_id = u.id
                 WHERE la.adjacent_leave_id IS NOT NULL
-                AND la.status NOT IN ('rejected', 'cancelled', 'combined')";
+                AND la.status NOT IN ('rejected', 'cancelled', 'combined', 'pending_routing')";
 
         if ($studentId) {
             $sql .= " AND la.student_id = :student_id";

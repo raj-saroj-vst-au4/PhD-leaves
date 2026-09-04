@@ -36,6 +36,7 @@ $allLeaves = $leaveClass->getAll($filters);
             <label class="block text-sm font-medium text-gray-700 mb-1 sm:mb-2">Status</label>
             <select name="status" class="w-full px-3 sm:px-4 py-2 border border-gray-300 rounded-lg text-sm sm:text-base">
                 <option value="">All Status</option>
+                <option value="pending_routing" <?php echo $filterStatus === 'pending_routing' ? 'selected' : ''; ?>>Awaiting Guide/TA Change</option>
                 <option value="pending_guide" <?php echo $filterStatus === 'pending_guide' ? 'selected' : ''; ?>>Pending Guide</option>
                 <option value="pending_ta" <?php echo $filterStatus === 'pending_ta' ? 'selected' : ''; ?>>Pending TA</option>
                 <option value="pending_hod" <?php echo $filterStatus === 'pending_hod' ? 'selected' : ''; ?>>Pending HOD</option>

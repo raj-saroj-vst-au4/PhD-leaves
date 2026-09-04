@@ -53,17 +53,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'phone' => $phone
             ]);
 
-            // Update Guide and TA for students
-            if ($result && $userRole === 'student') {
-                $facultyGuideId = $_POST['faculty_guide_id'] ?? '';
-                $taCoordinatorId = $_POST['ta_coordinator_id'] ?? '';
-
-                // Convert empty strings to null for the update
-                $facultyGuideId = $facultyGuideId === '' ? null : (int)$facultyGuideId;
-                $taCoordinatorId = $taCoordinatorId === '' ? null : (int)$taCoordinatorId;
-
-                $result = $userClass->updateStudentGuideAndTA($userId, $facultyGuideId, $taCoordinatorId);
-            }
+            /*
+             * Guide and TA coordinator are deliberately NOT accepted here.
+             *
+             * This handler used to pass whatever the student posted straight to
+             * updateStudentGuideAndTA(), which let a student re-route their own
+             * approval chain: swap in a different guide while an application was
+             * sitting at pending_guide, set guide == TA to collapse a stage, or
+             * blank both and drop out of monthly attendance sign-off. The select
+             * boxes only listed faculty, but nothing stopped a hand-made POST
+             * naming any active user at all.
+             *
+             * A correction is now raised from the leave application form and
+             * decided by an admin — see classes/GuideTAChange.php.
+             */
 
             if ($result) {
                 $success = 'Profile updated successfully';
@@ -256,35 +259,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         >
                                     </div>
                                     <div>
-                                        <label for="faculty_guide_id" class="block text-sm font-medium text-gray-700 mb-2">Faculty Guide</label>
-                                        <select
-                                            id="faculty_guide_id"
-                                            name="faculty_guide_id"
-                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Faculty Guide</label>
+                                        <input
+                                            type="text"
+                                            value="<?php echo sanitize($roleDetails['guide_name'] ?? 'Not assigned'); ?>"
+                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+                                            disabled
                                         >
-                                            <option value="">-- Select Faculty Guide --</option>
-                                            <?php foreach ($allFaculty as $faculty): ?>
-                                                <option value="<?php echo $faculty['id']; ?>" <?php echo ($roleDetails['faculty_guide_id'] ?? '') == $faculty['id'] ? 'selected' : ''; ?>>
-                                                    <?php echo sanitize($faculty['name']); ?>
-                                                </option>
-                                            <?php endforeach; ?>
-                                        </select>
                                     </div>
                                     <div>
-                                        <label for="ta_coordinator_id" class="block text-sm font-medium text-gray-700 mb-2">TA Coordinator</label>
-                                        <select
-                                            id="ta_coordinator_id"
-                                            name="ta_coordinator_id"
-                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">TA Coordinator</label>
+                                        <input
+                                            type="text"
+                                            value="<?php echo sanitize($roleDetails['ta_coordinator_name'] ?? 'Not assigned'); ?>"
+                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
+                                            disabled
                                         >
-                                            <option value="">-- Select TA Coordinator --</option>
-                                            <?php foreach ($allFaculty as $faculty): ?>
-                                                <option value="<?php echo $faculty['id']; ?>" <?php echo ($roleDetails['ta_coordinator_id'] ?? '') == $faculty['id'] ? 'selected' : ''; ?>>
-                                                    <?php echo sanitize($faculty['name']); ?>
-                                                </option>
-                                            <?php endforeach; ?>
-                                        </select>
                                     </div>
+                                </div>
+
+                                <div class="mt-4 p-4 bg-blue-50 border-l-4 border-blue-400 rounded">
+                                    <p class="text-sm text-blue-900">
+                                        <i class="fas fa-info-circle mr-1"></i>
+                                        Your Faculty Guide and TA Coordinator decide who approves your
+                                        leave, so they are set by the office rather than edited here.
+                                        If either is wrong, you can request a correction when you
+                                        <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="font-semibold underline">apply for leave</a>
+                                        &mdash; the office reviews the change before your application is routed.
+                                    </p>
                                 </div>
                             </div>
                         <?php endif; ?>

@@ -26,7 +26,7 @@ $recentLeaves = $leaveClass->getAll([
 $totalApplications = count($recentLeaves);
 $approved = count(array_filter($recentLeaves, fn($l) => $l['status'] === 'approved'));
 $rejected = count(array_filter($recentLeaves, fn($l) => $l['status'] === 'rejected'));
-$pending = count(array_filter($recentLeaves, fn($l) => in_array($l['status'], ['pending_guide', 'pending_ta', 'pending_hod', 'pending_admin'])));
+$pending = count(array_filter($recentLeaves, fn($l) => in_array($l['status'], Leave::PENDING_STATUSES)));
 
 // By leave type
 $personal = count(array_filter($recentLeaves, fn($l) => $l['leave_type'] === 'personal'));

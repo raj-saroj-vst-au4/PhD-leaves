@@ -61,6 +61,10 @@ $adminNav = [
         ['label' => 'All Applications',  'icon' => 'fa-list',         'url' => '/admin/leave_management.php'],
         ['label' => 'Monthly View',      'icon' => 'fa-calendar-alt', 'url' => '/admin/monthly_leaves.php'],
         ['label' => 'Adjacent Leaves',   'icon' => 'fa-compress-arrows-alt', 'url' => '/admin/adjacent_leaves.php'],
+        // Sits under Leaves rather than Manage: a pending request HOLDS a leave
+        // application, so this is where an admin looks when a student asks why
+        // theirs has not reached anyone.
+        ['label' => 'Guide/TA Requests', 'icon' => 'fa-user-edit',   'url' => '/admin/guide_ta_requests.php'],
     ]],
     ['label' => 'Attendance', 'icon' => 'fa-user-check', 'items' => [
         ['label' => 'Office Dashboard', 'icon' => 'fa-tachometer-alt',  'url' => '/admin/attendance.php'],
