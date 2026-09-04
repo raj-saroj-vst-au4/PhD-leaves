@@ -469,17 +469,31 @@ class EmailService {
 
         // The guide reviews only after the TA has confirmed, so say so — it
         // explains why the guide is seeing this now and what it already carries.
-        $stageNote = $role === 'ta'
-            ? 'You are the first reviewer. After you approve, each record goes to the '
-              . 'student&rsquo;s faculty guide for final sign-off.'
-            : 'The TA coordinator has already reviewed these records. Yours is the final sign-off.';
+        if ($role === 'ta') {
+            $stageNote = 'You are the first reviewer. After you approve, each record goes to the '
+                       . 'student&rsquo;s faculty guide for final sign-off.';
+        } else {
+            // Do not claim a TA review that never happened: these students reach
+            // the guide directly precisely because they have no TA coordinator.
+            $noTaReview = true;
+            foreach ($rows as $r) {
+                if (($r['ta_status'] ?? '') === 'approved') {
+                    $noTaReview = false;
+                    break;
+                }
+            }
+            $stageNote = $noTaReview
+                ? 'These students have no TA coordinator assigned, so they come straight to you. '
+                  . 'Yours is the only sign-off.'
+                : 'The TA coordinator has already reviewed these records. Yours is the final sign-off.';
+        }
 
         $rowsHtml = '';
         foreach ($rows as $r) {
             // Flag anything with an absence so it draws the eye — that is the
             // whole point of a human reviewing the month.
             $absent = (int) $r['absent_days'];
-            $pct = (float) $r['percentage'];
+            $pctRaw = $r['percentage'];
             $rowStyle = $absent > 0 ? ' style="background:#fef2f2"' : '';
             $rowsHtml .= '<tr' . $rowStyle . '>'
                 . '<td>' . htmlspecialchars($r['student_name']) . '</td>'
@@ -488,7 +502,8 @@ class EmailService {
                 . '<td style="text-align:center">' . (int) $r['present_days'] . '</td>'
                 . '<td style="text-align:center">' . (int) $r['excused_days'] . '</td>'
                 . '<td style="text-align:center"><b>' . $absent . '</b></td>'
-                . '<td style="text-align:center">' . number_format($pct, 1) . '%</td>'
+                . '<td style="text-align:center">'
+                . ($pctRaw === null ? 'n/a' : number_format((float) $pctRaw, 1) . '%') . '</td>'
                 . '</tr>';
         }
 

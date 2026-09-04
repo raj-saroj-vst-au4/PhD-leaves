@@ -2,8 +2,11 @@
 /**
  * Monthly attendance sign-off workflow.
  *
- * Routing mirrors the leave workflow so faculty meet one mental model:
- *   TA coordinator reviews first, then the faculty guide.
+ * Order here is TA coordinator first, then the faculty guide. Note this is the
+ * REVERSE of the leave chain (guide then TA) — deliberately, because the TA
+ * coordinator holds the duty roster and is best placed to check the raw days,
+ * leaving the guide the final word. What is borrowed from the leave workflow is
+ * its handling of the edges, not its order.
  * A stage with nobody assigned is SKIPPED rather than blocking — the same
  * decision Leave/Approval makes when a student has no TA coordinator.
  *
@@ -29,6 +32,8 @@ class AttendanceApproval
     {
         $created = 0;
         $skipped = 0;
+        $unroutable = [];       // no guide AND no TA — the office must assign one
+        $notYetJoined = [];     // enrolled after this period ended
 
         $sql = "INSERT INTO att_month_approvals
                     (period_year, period_month, student_id, ta_coordinator_id, faculty_guide_id,
@@ -40,11 +45,23 @@ class AttendanceApproval
                      :status, :ta_status, :guide_status)";
         $stmt = $this->db->prepare($sql);
 
+        $periodEnd = date('Y-m-t', strtotime(sprintf('%04d-%02d-01', $year, $month)));
+
         foreach ($rows as $row) {
             $studentId = (int) $row['student_id'];
             $routing = $this->routingFor($studentId);
             if (!$routing) {
                 $skipped++;                        // student no longer active
+                continue;
+            }
+
+            // Someone who joined after this month ended has no attendance to
+            // answer for. The report counts every past working day with no record
+            // as absent, so without this a student enrolled last week would be
+            // sent for sign-off showing a full month of fabricated absences.
+            if (!empty($routing['joining_date']) && $routing['joining_date'] > $periodEnd) {
+                $notYetJoined[] = $studentId;
+                $skipped++;
                 continue;
             }
 
@@ -71,12 +88,16 @@ class AttendanceApproval
                 $taStatus = 'skipped';
                 $guideStatus = 'pending';
             } else {
-                // Nobody to sign off. Recorded as approved-by-default would be a
-                // lie, so leave it pending_ta with both skipped: it shows up in
-                // the admin view as unassigned and needs a guide/TA set.
-                $status = 'pending_ta';
-                $taStatus = 'pending';
-                $guideStatus = 'skipped';
+                // Nobody to sign off. Creating the row anyway produced a record no
+                // query could ever surface (every consumer keys on the snapshotted
+                // ta/guide id) and that uk_period_student then blocked from being
+                // re-created once routing was fixed. Skip it and report it, so a
+                // later run picks the student up once a guide or TA is assigned —
+                // Leave::apply is likewise strict rather than creating an
+                // unroutable record.
+                $unroutable[] = $studentId;
+                $skipped++;
+                continue;
             }
 
             try {
@@ -85,12 +106,18 @@ class AttendanceApproval
                     ':ta_id' => $routing['ta_coordinator_id'] ?: null,
                     ':guide_id' => $routing['faculty_guide_id'] ?: null,
                     ':working' => (int) ($row['working_days'] ?? 0),
-                    // "Present" covers a self-marked day and an office manual mark;
-                    // both mean the student was accounted for that day.
-                    ':present' => (int) ($row['present'] ?? 0) + (int) ($row['manual'] ?? 0),
+                    // NOT present + manual: the report's `manual` is a SUBSET of
+                    // `present` (its spreadsheet column reads "of which Manual"),
+                    // so adding them double-counted every office-marked day and
+                    // could make the columns exceed the working days.
+                    ':present' => (int) ($row['present'] ?? 0),
                     ':excused' => (int) ($row['excused'] ?? 0),
                     ':absent' => (int) ($row['absent'] ?? 0),
-                    ':pct' => (float) ($row['percentage'] ?? 0),
+                    // The report returns null when nothing is accountable (e.g. a
+                    // month entirely covered by approved leave) and prints "n/a".
+                    // Coercing that to 0 would show a compliant student as 0%.
+                    ':pct' => isset($row['percentage']) && $row['percentage'] !== null
+                        ? (float) $row['percentage'] : null,
                     ':status' => $status, ':ta_status' => $taStatus, ':guide_status' => $guideStatus,
                 ]);
                 $created++;
@@ -104,7 +131,8 @@ class AttendanceApproval
             }
         }
 
-        return ['created' => $created, 'skipped' => $skipped];
+        return ['created' => $created, 'skipped' => $skipped,
+                'unroutable' => $unroutable, 'not_yet_joined' => $notYetJoined];
     }
 
     /**
@@ -148,7 +176,7 @@ class AttendanceApproval
     private function routingFor($studentId)
     {
         $stmt = $this->db->prepare(
-            "SELECT s.faculty_guide_id, s.ta_coordinator_id
+            "SELECT s.faculty_guide_id, s.ta_coordinator_id, s.joining_date
              FROM students s JOIN users u ON u.id = s.user_id
              WHERE s.id = :id AND u.is_active = 1 AND u.role = 'student'"
         );

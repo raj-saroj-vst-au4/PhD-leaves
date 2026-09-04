@@ -63,6 +63,12 @@ try {
 
     $done = 0;
     $failed = [];
+    // Tally what actually happened to the records. The message used to be worded
+    // from the email count, so a failed handover email reported "sign-off is
+    // complete" when the records were in fact waiting on a guide who was never
+    // told — the opposite of the truth.
+    $movedToGuide = 0;
+    $completed = 0;
     // Records that have just moved to the guide, so the guide can be told once
     // per (guide, month) instead of once per student.
     $handoffs = [];
@@ -72,6 +78,11 @@ try {
         $result = $approval->act($id, $userId, $role, $decision, $remarks);
         if ($result['ok']) {
             $done++;
+            if ($result['new_status'] === 'pending_guide') {
+                $movedToGuide++;
+            } elseif ($result['new_status'] === 'approved') {
+                $completed++;
+            }
             if ($result['new_status'] === 'pending_guide' && $before) {
                 $key = (int) $before['faculty_guide_id'] . ':' . (int) $before['period_year']
                      . ':' . (int) $before['period_month'];
@@ -122,10 +133,20 @@ try {
 
     $verb = $decision === 'approve' ? 'approved' : 'marked as disputed';
     $message = "$done record(s) $verb.";
-    if ($role === 'ta' && $decision === 'approve') {
-        $message .= $notified > 0
-            ? " The faculty guide has been notified."
-            : ' Sign-off is complete where no guide is assigned.';
+    if ($decision === 'approve') {
+        // Describe both outcomes when a batch produced a mix of the two.
+        $parts = [];
+        if ($movedToGuide > 0) {
+            $parts[] = $movedToGuide . ' sent to the faculty guide'
+                . ($notified > 0 ? ' (notified by email)' : ' — the notification email could not be sent,'
+                    . ' but it is on their approvals page');
+        }
+        if ($completed > 0) {
+            $parts[] = $completed . ' fully signed off';
+        }
+        if ($parts) {
+            $message .= ' ' . ucfirst(implode('; ', $parts)) . '.';
+        }
     }
     if ($failed) {
         $message .= ' ' . count($failed) . ' could not be updated (already actioned).';

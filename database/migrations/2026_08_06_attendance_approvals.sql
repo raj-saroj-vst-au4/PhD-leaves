@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS `att_month_approvals` (
   `present_days` INT(11) NOT NULL DEFAULT 0 COMMENT 'self-marked + office manual',
   `excused_days` INT(11) NOT NULL DEFAULT 0 COMMENT 'approved leave or office-excused',
   `absent_days` INT(11) NOT NULL DEFAULT 0,
-  `percentage` DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  `percentage` DECIMAL(5,2) DEFAULT NULL COMMENT 'NULL = n/a, nothing accountable',
 
   `status` ENUM('pending_ta','pending_guide','approved','rejected')
       NOT NULL DEFAULT 'pending_ta',
@@ -84,3 +84,9 @@ CREATE TABLE IF NOT EXISTS `att_month_approval_runs` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_period` (`period_year`,`period_month`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Existing installs: percentage started out NOT NULL DEFAULT 0.00, which turned
+-- the report's deliberate "n/a" (a month with nothing accountable, e.g. fully
+-- covered by approved leave) into a headline 0%. MODIFY is idempotent.
+ALTER TABLE `att_month_approvals`
+    MODIFY `percentage` DECIMAL(5,2) DEFAULT NULL COMMENT 'NULL = n/a, nothing accountable';

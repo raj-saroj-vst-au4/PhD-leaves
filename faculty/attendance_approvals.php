@@ -19,10 +19,16 @@ $approval = new AttendanceApproval();
 
 $pendingAsTA    = $approval->getPendingForFaculty($userId, 'ta');
 $pendingAsGuide = $approval->getPendingForFaculty($userId, 'guide');
-$history        = array_merge(
+// Two role queries concatenated arrive in no useful order, so sort newest month
+// first before rendering (DataTables is told not to re-order).
+$history = array_merge(
     $approval->getHistoryForFaculty($userId, 'ta'),
     $approval->getHistoryForFaculty($userId, 'guide')
 );
+usort($history, function ($a, $b) {
+    return [(int) $b['period_year'], (int) $b['period_month'], $a['roll_number']]
+       <=> [(int) $a['period_year'], (int) $a['period_month'], $b['roll_number']];
+});
 
 $taCount    = count($pendingAsTA);
 $guideCount = count($pendingAsGuide);
@@ -181,11 +187,11 @@ foreach ($stages as $stage):
                             </th>
                             <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Student</th>
                             <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Roll No.</th>
-                            <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Working</th>
+                            <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase hidden sm:table-cell">Working</th>
                             <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Present</th>
                             <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Excused</th>
                             <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Absent</th>
-                            <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">%</th>
+                            <th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase hidden sm:table-cell">%</th>
                             <th class="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">Action</th>
                         </tr>
                     </thead>
@@ -199,13 +205,17 @@ foreach ($stages as $stage):
                             </td>
                             <td class="px-3 py-3 font-medium text-gray-900"><?php echo sanitize($r['student_name']); ?></td>
                             <td class="px-3 py-3 text-gray-500"><?php echo sanitize($r['roll_number']); ?></td>
-                            <td class="px-3 py-3 text-center"><?php echo (int) $r['working_days']; ?></td>
+                            <td class="px-3 py-3 text-center hidden sm:table-cell"><?php echo (int) $r['working_days']; ?></td>
                             <td class="px-3 py-3 text-center text-green-700 font-medium"><?php echo (int) $r['present_days']; ?></td>
                             <td class="px-3 py-3 text-center text-amber-700"><?php echo (int) $r['excused_days']; ?></td>
                             <td class="px-3 py-3 text-center <?php echo $absent > 0 ? 'text-red-700 font-bold' : 'text-gray-400'; ?>">
                                 <?php echo $absent; ?>
                             </td>
-                            <td class="px-3 py-3 text-center"><?php echo number_format((float) $r['percentage'], 1); ?>%</td>
+                            <td class="px-3 py-3 text-center hidden sm:table-cell">
+                                <?php echo $r['percentage'] === null
+                                    ? '<span class="text-gray-400">n/a</span>'
+                                    : number_format((float) $r['percentage'], 1) . '%'; ?>
+                            </td>
                             <td class="px-3 py-3 text-right whitespace-nowrap">
                                 <?php if ($blocked): ?>
                                     <span class="text-gray-400 text-xs mr-3" title="Clear your pending leave approvals for this month first">approve</span>
@@ -271,7 +281,7 @@ endforeach;
                     <?php else: ?>
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">disputed</span>
                     <?php endif; ?>
-                    <span class="text-xs text-gray-400 ml-1">(overall: <?php echo sanitize($h['status']); ?>)</span>
+                    <span class="ml-1"><?php echo getStatusBadge($h['status']); ?></span>
                 </td>
                 <td class="px-4 py-3 text-gray-600"><?php echo $remarks ? sanitize($remarks) : '<span class="text-gray-400">&mdash;</span>'; ?></td>
             </tr>

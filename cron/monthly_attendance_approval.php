@@ -21,6 +21,21 @@
  *   30 8 1 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_attendance_approval.php
  */
 
+/*
+ * CLI only.
+ *
+ * These scripts live inside the document root, so without this an
+ * unauthenticated HTTP GET could run them: opening a sign-off month early,
+ * mass-emailing faculty, resetting balances, and echoing recipient names and
+ * addresses into the response body (cronLog also echoes). The web server is the
+ * wrong place to enforce it — production runs nginx, which ignores .htaccess —
+ * so the guard belongs in the script itself.
+ */
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 set_time_limit(900);
 
 require_once __DIR__ . '/../config/constants.php';
@@ -125,6 +140,22 @@ try {
             cronLog("ERROR: month must be 1-12, got $month");
             exit(1);
         }
+        if ($year < 2000 || $year > 2100) {
+            cronLog("ERROR: implausible year '$year'");
+            exit(1);
+        }
+        // Refuse a month that has not finished. The report only counts a day as
+        // absent once it has passed, so opening the current month would snapshot
+        // partial figures — every student near 100% on a full-month denominator —
+        // and the unique key would then prevent those frozen numbers from ever
+        // being corrected.
+        $firstOfThisMonth = (new DateTime('first day of this month'))->format('Y-m-01');
+        $requested = sprintf('%04d-%02d-01', $year, $month);
+        if ($requested >= $firstOfThisMonth) {
+            cronLog("ERROR: $year-" . sprintf('%02d', $month) . ' is not over yet. '
+                  . 'Sign-off can only be opened for a completed month.');
+            exit(1);
+        }
         $label = DateTime::createFromFormat('!Y-n-j', "$year-$month-1")->format('F Y');
         cronLog("Manual period override: $label");
     }
@@ -159,6 +190,17 @@ try {
     $opened = $approval->openMonth($year, $month, $report['rows']);
     cronLog("Opened {$opened['created']} student row(s); skipped {$opened['skipped']} "
           . '(already open, or student not active)');
+    // Say WHICH students were left out and why, so the office can act rather
+    // than wonder why a name never reached a faculty member.
+    if (!empty($opened['unroutable'])) {
+        cronLog('  NOT routed — no faculty guide AND no TA coordinator assigned: student_id '
+              . implode(', ', $opened['unroutable'])
+              . ' (assign one in Users, then re-run with an explicit period)');
+    }
+    if (!empty($opened['not_yet_joined'])) {
+        cronLog('  skipped — joined after this period ended: student_id '
+              . implode(', ', $opened['not_yet_joined']));
+    }
 
     // 3. One combined email per faculty member who now has work waiting.
     $sent = ['ta' => 0, 'guide' => 0];
@@ -169,12 +211,16 @@ try {
                 continue;
             }
             $ok = $emailService->sendAttendanceApprovalRequest($faculty, $role, $label, $rows);
+            // Log by user id, not name/address: this file sits inside the
+            // document root under a predictable name, so it must not become a
+            // faculty directory. Ids are enough to trace a delivery.
             if ($ok) {
                 $sent[$role]++;
-                cronLog(sprintf('  emailed %s (%s) — %d student(s) [%s]',
-                    $faculty['name'], $faculty['email'], count($rows), strtoupper($role)));
+                cronLog(sprintf('  emailed user_id=%d — %d student(s) [%s]',
+                    (int) $faculty['id'], count($rows), strtoupper($role)));
             } else {
-                cronLog('  WARNING: email failed for ' . $faculty['email'] . ' [' . $role . ']');
+                cronLog(sprintf('  WARNING: email failed for user_id=%d [%s]',
+                    (int) $faculty['id'], $role));
             }
         }
     }
