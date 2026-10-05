@@ -104,7 +104,7 @@ $navGroupIsCurrent = function ($group) use ($navIsCurrent) {
     <title><?php echo sanitize($pageTitle); ?></title>
 
     <!-- TailwindCSS (Local) -->
-    <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/vendor/tailwind/tailwind.min.css">
+    <link rel="stylesheet" href="<?php echo asset_url('public/vendor/tailwind/tailwind.min.css'); ?>">
 
     <!-- jQuery (Local) -->
     <script src="<?php echo BASE_URL; ?>/public/vendor/jquery/jquery-3.7.1.min.js"></script>

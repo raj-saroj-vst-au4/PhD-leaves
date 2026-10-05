@@ -451,8 +451,8 @@ class EmailService {
             $waitingLabel = $waitingDays === 0 ? 'today' : ($waitingDays === 1 ? '1 day' : "$waitingDays days");
 
             $rowsHtml .= '<tr>'
-                . '<td>' . htmlspecialchars($leave['student_name']) . '</td>'
-                . '<td>' . htmlspecialchars($leave['roll_number']) . '</td>'
+                . '<td>' . $this->text($leave['student_name']) . '</td>'
+                . '<td>' . $this->text($leave['roll_number']) . '</td>'
                 . '<td>' . htmlspecialchars(ucfirst($leave['leave_type'])) . '</td>'
                 . '<td>' . date('d M Y', strtotime($leave['start_date'])) . ' &ndash; ' . date('d M Y', strtotime($leave['end_date'])) . '</td>'
                 . '<td>' . (int)$leave['total_days'] . '</td>'
@@ -523,8 +523,8 @@ class EmailService {
             $pctRaw = $r['percentage'];
             $rowStyle = $absent > 0 ? ' style="background:#fef2f2"' : '';
             $rowsHtml .= '<tr' . $rowStyle . '>'
-                . '<td>' . htmlspecialchars($r['student_name']) . '</td>'
-                . '<td>' . htmlspecialchars($r['roll_number']) . '</td>'
+                . '<td>' . $this->text($r['student_name']) . '</td>'
+                . '<td>' . $this->text($r['roll_number']) . '</td>'
                 . '<td style="text-align:center">' . (int) $r['working_days'] . '</td>'
                 . '<td style="text-align:center">' . (int) $r['present_days'] . '</td>'
                 . '<td style="text-align:center">' . (int) $r['excused_days'] . '</td>'
@@ -581,16 +581,16 @@ class EmailService {
             $current = $current ?: 'Not assigned';
             $requested = $requested ?: 'None';
             return $current === $requested
-                ? htmlspecialchars($current) . ' <i>(unchanged)</i>'
-                : htmlspecialchars($current) . ' &rarr; <b>' . htmlspecialchars($requested) . '</b>';
+                ? $this->text($current) . ' <i>(unchanged)</i>'
+                : $this->text($current) . ' &rarr; <b>' . $this->text($requested) . '</b>';
         };
 
         $placeholders = [
-            '{STUDENT_NAME}'  => htmlspecialchars($request['student_name']),
-            '{ROLL_NUMBER}'   => htmlspecialchars($request['roll_number']),
+            '{STUDENT_NAME}'  => $this->text($request['student_name']),
+            '{ROLL_NUMBER}'   => $this->text($request['roll_number']),
             '{GUIDE_CHANGE}'  => $fmt($request['current_guide_name'], $request['requested_guide_name']),
             '{TA_CHANGE}'     => $fmt($request['current_ta_name'], $request['requested_ta_name']),
-            '{REASON}'        => nl2br(htmlspecialchars($request['reason'])),
+            '{REASON}'        => $this->text($request['reason'], true),
             '{ACTION_URL}'    => $this->getAbsoluteUrl('/admin/guide_ta_requests.php'),
             '{SITE_NAME}'     => SITE_NAME,
         ];
@@ -630,9 +630,9 @@ class EmailService {
             $outcome = 'The office has <b>approved</b> your request. Your records now show:';
             $detail = '<ul>'
                 . '<li>Faculty Guide: <b>'
-                . htmlspecialchars($request['requested_guide_name'] ?: 'Not assigned') . '</b></li>'
+                . $this->text($request['requested_guide_name'] ?: 'Not assigned') . '</b></li>'
                 . '<li>TA Coordinator: <b>'
-                . htmlspecialchars($request['requested_ta_name'] ?: 'Not assigned') . '</b></li>'
+                . $this->text($request['requested_ta_name'] ?: 'Not assigned') . '</b></li>'
                 . '</ul>';
         } else {
             // Say what IS in force, not just that the answer was no — otherwise
@@ -641,9 +641,9 @@ class EmailService {
                      . 'Your Faculty Guide and TA Coordinator are unchanged:';
             $detail = '<ul>'
                 . '<li>Faculty Guide: <b>'
-                . htmlspecialchars($request['current_guide_name'] ?: 'Not assigned') . '</b></li>'
+                . $this->text($request['current_guide_name'] ?: 'Not assigned') . '</b></li>'
                 . '<li>TA Coordinator: <b>'
-                . htmlspecialchars($request['current_ta_name'] ?: 'Not assigned') . '</b></li>'
+                . $this->text($request['current_ta_name'] ?: 'Not assigned') . '</b></li>'
                 . '</ul>';
         }
 
@@ -660,11 +660,11 @@ class EmailService {
         $remarks = trim((string) ($request['admin_remarks'] ?? ''));
 
         $placeholders = [
-            '{STUDENT_NAME}' => htmlspecialchars($request['student_name']),
+            '{STUDENT_NAME}' => $this->text($request['student_name']),
             '{OUTCOME}'      => $outcome,
             '{DETAIL}'       => $detail,
             '{REMARKS}'      => $remarks !== ''
-                ? '<div class="note"><b>Office remarks:</b><br>' . nl2br(htmlspecialchars($remarks)) . '</div>'
+                ? '<div class="note"><b>Office remarks:</b><br>' . $this->text($remarks, true) . '</div>'
                 : '',
             '{ACTION_URL}'   => $this->getAbsoluteUrl('/student/leave_history.php'),
             '{SITE_NAME}'    => SITE_NAME,

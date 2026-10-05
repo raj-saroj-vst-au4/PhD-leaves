@@ -170,7 +170,11 @@ if ($displayToken !== '') {
     $displayTicket = att_ticket();
     $_SESSION = [];
 } else {
-    requireLogin($method === 'POST');
+    // Activity = a POST, or a GET the page marks as user-initiated (the office
+    // console's tab/date clicks). Background polls carry no mark and so never
+    // keep an idle session alive. A custom header cannot be sent cross-site
+    // without a CORS preflight, so it cannot be forged from another origin.
+    requireLogin($method === 'POST' || ($_SERVER['HTTP_X_USER_ACTION'] ?? '') === '1');
     // Nothing below reads or writes the session. Release its lock now, or every
     // other request from this browser queues behind the backend call (face
     // inference can take seconds).

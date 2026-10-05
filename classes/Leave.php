@@ -1515,6 +1515,20 @@ class Leave {
             $restored[] = (int) $src['id'];
         }
 
+        // combineLeaves() pointed every live leave that was adjacent to a source
+        // at the combined leave. That leave is now dead, so re-derive their
+        // adjacency (the restored sources are live again) — otherwise the
+        // split-leave warning disappears and they can never be combined.
+        $stmt = $this->db->prepare(
+            "SELECT id, student_id, start_date, end_date FROM leave_applications
+             WHERE adjacent_leave_id = :cid AND status IN (" . self::liveStatusSql() . ")");
+        $stmt->execute([':cid' => (int) $combinedLeaveId]);
+        $repoint = $this->db->prepare("UPDATE leave_applications SET adjacent_leave_id = :adj WHERE id = :id");
+        foreach ($stmt->fetchAll() as $l) {
+            $adj = $this->findAdjacentLeave($l['student_id'], $l['start_date'], $l['end_date'], [(int) $l['id']]);
+            $repoint->execute([':adj' => $adj ? (int) $adj['id'] : null, ':id' => (int) $l['id']]);
+        }
+
         return $restored;
     }
 

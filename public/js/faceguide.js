@@ -408,6 +408,9 @@
         if (!tooSmall) {
           if (!centreDone && rad < 0.2) {
             frames.push(await grab());                       // straight-on
+            // A gap, as in runMark: two grabs before the camera delivers a new
+            // frame are byte-identical, and the server refuses duplicate frames.
+            await wait(200);
             frames.push(await grab());
             centreDone = true;
           } else if (activeIdx >= 0 && !lit.has(activeIdx)) {

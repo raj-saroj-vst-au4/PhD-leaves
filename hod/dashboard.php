@@ -194,7 +194,7 @@ $statusRows = [
                             <th>Type</th>
                             <th>Dates</th>
                             <th>Applied</th>
-                            <th class="text-right"><span class="sr-only">Actions</span></th>
+                            <th class="relative text-right"><span class="sr-only">Actions</span></th>
                         </tr>
                     </thead>
                     <tbody>

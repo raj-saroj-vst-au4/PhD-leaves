@@ -26,7 +26,7 @@ session_write_close();
     <title>Attendance Code - <?php echo SITE_NAME; ?></title>
     <?php /* Same design system as the portal (Inter, brand palette, icons); the
              TV-specific sizing and backdrop live in attendance.css (.att-display*). */ ?>
-    <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/vendor/tailwind/tailwind.min.css">
+    <link rel="stylesheet" href="<?php echo asset_url('public/vendor/tailwind/tailwind.min.css'); ?>">
     <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="<?php echo asset_url('public/css/attendance.css'); ?>">
 </head>

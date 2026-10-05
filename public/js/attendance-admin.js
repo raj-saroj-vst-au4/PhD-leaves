@@ -21,12 +21,22 @@
   }
   setInterval(refreshTicket, 8 * 60 * 1000);
 
+  // True only while the 30-second Today poll is running. Every other request
+  // here is something the admin clicked, and tells the portal so: a GET through
+  // attapi does not count as activity unless marked, or an admin who only reads
+  // (dates, tabs, reports) for an hour would be signed out mid-use.
+  let polling = false;
+
   async function api(path, opts = {}) {
     // The forwarder routes on ?p=<encoded path> (see attapi/index.php).
     const res = await fetch(API + encodeURIComponent(path), {
       credentials: 'same-origin',
       ...opts,
-      headers: { Authorization: 'Bearer ' + ticket, ...(opts.headers || {}) },
+      headers: {
+        Authorization: 'Bearer ' + ticket,
+        ...(polling ? {} : { 'X-User-Action': '1' }),
+        ...(opts.headers || {}),
+      },
     });
     let data = {};
     try { data = await res.json(); } catch (e) {}
@@ -585,7 +595,8 @@
   setInterval(() => {
     if (!document.getElementById('atta-panel-today').classList.contains('hidden') &&
         dateInput.value === new Date().toISOString().slice(0, 10)) {
-      loadDay();
+      polling = true;
+      loadDay().finally(() => { polling = false; });
     }
   }, 30 * 1000);
 })();
