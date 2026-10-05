@@ -19,190 +19,254 @@ $allStudents = $userClass->getAllStudents(true);
 $allFaculty = $userClass->getAllByRole('faculty', true);
 $pendingAdmin = $leaveClass->getPendingForAdmin();
 
-// Statistics
-$totalStudents = count($allStudents);
-$totalFaculty = count($allFaculty);
-$totalApplications = count($allLeaves);
-$pendingCount = count($pendingAdmin);
-
 // Recent applications (last 10)
 $recentApplications = array_slice($allLeaves, 0, 10);
 
-// By status
-$approved = count(array_filter($allLeaves, fn($l) => $l['status'] === 'approved'));
-$rejected = count(array_filter($allLeaves, fn($l) => $l['status'] === 'rejected'));
-$pending = $totalApplications - $approved - $rejected;
+// Statistics. 'combined' rows are superseded duplicates (combineLeaves()
+// inserts one application spanning the originals), so they are left out of
+// the counts to avoid doubling them.
+$countedLeaves = array_filter($allLeaves, fn($l) => $l['status'] !== 'combined');
+$totalStudents = count($allStudents);
+$totalFaculty = count($allFaculty);
+$totalApplications = count($countedLeaves);
+$pendingCount = count($pendingAdmin);
+
+// By status. Pending = still in the approval chain; "total - approved -
+// rejected" also counted cancelled and combined applications as pending.
+$approved = count(array_filter($countedLeaves, fn($l) => $l['status'] === 'approved'));
+$rejected = count(array_filter($countedLeaves, fn($l) => $l['status'] === 'rejected'));
+$pending = count(array_filter($countedLeaves, fn($l) => in_array($l['status'], Leave::PENDING_STATUSES, true)));
 ?>
 
-<div class="mb-8">
-    <h1 class="text-3xl font-bold text-gray-900">Admin Dashboard</h1>
-    <p class="text-gray-600 mt-2">System Overview & Management</p>
+
+<?php
+// ---- View helpers (presentation only) -------------------------------------
+$hour = (int) date('H');
+$greeting = $hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening');
+
+// Initials for a person's avatar: first letter of the first two words.
+$initialsOf = function ($name) {
+    $out = '';
+    foreach (array_slice(preg_split('/\s+/', trim(html_entity_decode((string) $name, ENT_QUOTES, 'UTF-8'))), 0, 2) as $part) {
+        $out .= mb_strtoupper(mb_substr($part, 0, 1));
+    }
+    return $out !== '' ? $out : '?';
+};
+
+// Status overview: share of the decided + in-flight applications.
+$statusRows = [
+    ['label' => 'Approved', 'count' => $approved, 'dot' => 'bg-emerald-500'],
+    ['label' => 'Pending',  'count' => $pending,  'dot' => 'bg-amber-500'],
+    ['label' => 'Rejected', 'count' => $rejected, 'dot' => 'bg-rose-500'],
+];
+$statusTotal = $approved + $pending + $rejected;
+?>
+
+<div class="page-header">
+    <div>
+        <p class="page-eyebrow">Administrator</p>
+        <h1 class="page-title"><?php echo $greeting; ?>, <?php echo sanitize($userName); ?></h1>
+        <p class="page-subtitle">
+            <?php echo date('l, j F Y'); ?>
+            <span class="mx-1.5 text-gray-300">&middot;</span>
+            System overview &amp; management
+        </p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+        <a href="<?php echo BASE_URL; ?>/admin/users.php?action=invite" class="btn btn-secondary">
+            <i class="fas fa-user-plus"></i> Invite user
+        </a>
+        <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php" class="btn btn-primary">
+            <i class="fas fa-clipboard-check"></i> Pending approvals
+            <?php if ($pendingCount > 0): ?>
+                <span class="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-white/20 px-1.5 py-0.5 text-xs font-semibold leading-none ring-1 ring-inset ring-white/30"><?php echo $pendingCount; ?></span>
+            <?php endif; ?>
+        </a>
+    </div>
 </div>
 
 <?php displayFlashMessage(); ?>
 
 <!-- Stats Grid -->
-<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-    <div class="bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between mb-2">
-            <div>
-                <p class="text-sm opacity-90">Total Students</p>
-                <p class="text-4xl font-bold"><?php echo $totalStudents; ?></p>
-            </div>
-            <i class="fas fa-user-graduate text-5xl opacity-30"></i>
+<div class="mb-8 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+    <div class="stat-tile flex-col gap-3 sm:flex-row sm:gap-4">
+        <span class="icon-chip chip-brand"><i class="fas fa-user-graduate"></i></span>
+        <div>
+            <p class="stat-label">Total students</p>
+            <p class="stat-value"><?php echo $totalStudents; ?></p>
+            <a href="<?php echo BASE_URL; ?>/admin/users.php?role=student" class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
+                Manage students <i class="fas fa-arrow-right text-[10px]"></i>
+            </a>
         </div>
-        <a href="<?php echo BASE_URL; ?>/admin/users.php?role=student" class="text-sm opacity-90 hover:opacity-100">
-            Manage Students →
-        </a>
     </div>
 
-    <div class="bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between mb-2">
-            <div>
-                <p class="text-sm opacity-90">Faculty Members</p>
-                <p class="text-4xl font-bold"><?php echo $totalFaculty; ?></p>
-            </div>
-            <i class="fas fa-chalkboard-teacher text-5xl opacity-30"></i>
+    <div class="stat-tile flex-col gap-3 sm:flex-row sm:gap-4">
+        <span class="icon-chip chip-violet"><i class="fas fa-chalkboard-teacher"></i></span>
+        <div>
+            <p class="stat-label">Faculty members</p>
+            <p class="stat-value"><?php echo $totalFaculty; ?></p>
+            <a href="<?php echo BASE_URL; ?>/admin/users.php?role=faculty" class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
+                Manage faculty <i class="fas fa-arrow-right text-[10px]"></i>
+            </a>
         </div>
-        <a href="<?php echo BASE_URL; ?>/admin/users.php?role=faculty" class="text-sm opacity-90 hover:opacity-100">
-            Manage Faculty →
-        </a>
     </div>
 
-    <div class="bg-gradient-to-br from-green-500 to-green-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between mb-2">
-            <div>
-                <p class="text-sm opacity-90">Leave Applications</p>
-                <p class="text-4xl font-bold"><?php echo $totalApplications; ?></p>
-            </div>
-            <i class="fas fa-file-alt text-5xl opacity-30"></i>
+    <div class="stat-tile flex-col gap-3 sm:flex-row sm:gap-4">
+        <span class="icon-chip chip-emerald"><i class="fas fa-file-alt"></i></span>
+        <div>
+            <p class="stat-label">Leave applications</p>
+            <p class="stat-value"><?php echo $totalApplications; ?></p>
+            <a href="<?php echo BASE_URL; ?>/admin/leave_management.php" class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
+                View all <i class="fas fa-arrow-right text-[10px]"></i>
+            </a>
         </div>
-        <a href="<?php echo BASE_URL; ?>/admin/leave_management.php" class="text-sm opacity-90 hover:opacity-100">
-            View All →
-        </a>
     </div>
 
-    <div class="bg-gradient-to-br from-orange-500 to-red-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between mb-2">
-            <div>
-                <p class="text-sm opacity-90">Pending Admin</p>
-                <p class="text-4xl font-bold"><?php echo $pendingCount; ?></p>
-            </div>
-            <i class="fas fa-clock text-5xl opacity-30"></i>
+    <div class="stat-tile flex-col gap-3 sm:flex-row sm:gap-4">
+        <span class="icon-chip chip-amber"><i class="fas fa-clock"></i></span>
+        <div>
+            <p class="stat-label">Pending admin</p>
+            <p class="stat-value"><?php echo $pendingCount; ?></p>
+            <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php" class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
+                Review now <i class="fas fa-arrow-right text-[10px]"></i>
+            </a>
         </div>
-        <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php" class="text-sm opacity-90 hover:opacity-100">
-            Review Now →
-        </a>
     </div>
 </div>
 
 <!-- Alert for Pending Approvals -->
 <?php if ($pendingCount > 0): ?>
-    <div class="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-8">
-        <div class="flex items-center justify-between">
-            <div class="flex items-start">
-                <i class="fas fa-bell text-orange-600 text-xl mr-3 mt-0.5"></i>
-                <div>
-                    <p class="text-sm font-semibold text-orange-800 mb-1">Action Required</p>
-                    <p class="text-sm text-orange-700">
-                        You have <strong><?php echo $pendingCount; ?></strong> extended leave application(s) awaiting final admin approval.
-                    </p>
-                </div>
+    <div class="alert alert-warning mb-8" role="status">
+        <i class="fas fa-bell mt-0.5 text-amber-500"></i>
+        <div class="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+                <p class="font-semibold text-amber-900">Action required</p>
+                <p class="mt-0.5 text-amber-800">
+                    You have <strong><?php echo $pendingCount; ?></strong> extended leave application(s) awaiting final admin approval.
+                </p>
             </div>
-            <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php"
-               class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 whitespace-nowrap">
-                Review Now
+            <a href="<?php echo BASE_URL; ?>/admin/pending_approvals.php" class="btn btn-warning btn-sm self-start sm:self-auto">
+                Review now <i class="fas fa-arrow-right"></i>
             </a>
         </div>
     </div>
 <?php endif; ?>
 
 <!-- Quick Actions -->
-<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-    <a href="<?php echo BASE_URL; ?>/admin/users.php?action=invite" class="block bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow">
-        <div class="flex items-center mb-3">
-            <div class="p-3 bg-blue-100 rounded-lg mr-4">
-                <i class="fas fa-user-plus text-2xl text-blue-600"></i>
-            </div>
-            <h3 class="text-lg font-semibold text-gray-900">Invite User</h3>
+<div class="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <a href="<?php echo BASE_URL; ?>/admin/users.php?action=invite" class="card card-hover group flex items-start gap-4 p-5">
+        <span class="icon-chip chip-brand"><i class="fas fa-user-plus"></i></span>
+        <div class="min-w-0 flex-1">
+            <p class="font-semibold text-gray-900">Invite user</p>
+            <p class="mt-1 text-sm text-gray-500">Send invitation to new users</p>
         </div>
-        <p class="text-sm text-gray-600">Send invitation to new users</p>
+        <i class="fas fa-arrow-right mt-1 text-sm text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-brand-600"></i>
     </a>
 
-    <a href="<?php echo BASE_URL; ?>/admin/holidays.php" class="block bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow">
-        <div class="flex items-center mb-3">
-            <div class="p-3 bg-purple-100 rounded-lg mr-4">
-                <i class="fas fa-calendar-alt text-2xl text-purple-600"></i>
-            </div>
-            <h3 class="text-lg font-semibold text-gray-900">Manage Holidays</h3>
+    <a href="<?php echo BASE_URL; ?>/admin/holidays.php" class="card card-hover group flex items-start gap-4 p-5">
+        <span class="icon-chip chip-violet"><i class="fas fa-calendar-alt"></i></span>
+        <div class="min-w-0 flex-1">
+            <p class="font-semibold text-gray-900">Manage holidays</p>
+            <p class="mt-1 text-sm text-gray-500">Add and update institute holidays</p>
         </div>
-        <p class="text-sm text-gray-600">Add and update institute holidays</p>
+        <i class="fas fa-arrow-right mt-1 text-sm text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-brand-600"></i>
     </a>
 
-    <a href="<?php echo BASE_URL; ?>/admin/analytics.php" class="block bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow">
-        <div class="flex items-center mb-3">
-            <div class="p-3 bg-green-100 rounded-lg mr-4">
-                <i class="fas fa-chart-line text-2xl text-green-600"></i>
-            </div>
-            <h3 class="text-lg font-semibold text-gray-900">View Analytics</h3>
+    <a href="<?php echo BASE_URL; ?>/admin/attendance_approvals.php" class="card card-hover group flex items-start gap-4 p-5">
+        <span class="icon-chip chip-sky"><i class="fas fa-user-check"></i></span>
+        <div class="min-w-0 flex-1">
+            <p class="font-semibold text-gray-900">Attendance sign-off</p>
+            <p class="mt-1 text-sm text-gray-500">Track the monthly attendance sign-off</p>
         </div>
-        <p class="text-sm text-gray-600">System statistics and reports</p>
+        <i class="fas fa-arrow-right mt-1 text-sm text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-brand-600"></i>
+    </a>
+
+    <a href="<?php echo BASE_URL; ?>/admin/analytics.php" class="card card-hover group flex items-start gap-4 p-5">
+        <span class="icon-chip chip-emerald"><i class="fas fa-chart-line"></i></span>
+        <div class="min-w-0 flex-1">
+            <p class="font-semibold text-gray-900">View analytics</p>
+            <p class="mt-1 text-sm text-gray-500">System statistics and reports</p>
+        </div>
+        <i class="fas fa-arrow-right mt-1 text-sm text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-brand-600"></i>
     </a>
 </div>
 
-<!-- Leave Status Overview -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-    <div class="bg-white rounded-lg shadow-md p-6">
-        <h3 class="text-lg font-semibold text-gray-900 mb-4">Leave Status Overview</h3>
-        <div class="space-y-4">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center">
-                    <div class="w-3 h-3 rounded-full bg-green-500 mr-3"></div>
-                    <span class="text-gray-700">Approved</span>
-                </div>
-                <span class="font-semibold text-gray-900"><?php echo $approved; ?></span>
+<!-- Leave Status Overview & Recent Applications -->
+<div class="grid gap-6 lg:grid-cols-3">
+    <div class="card self-start">
+        <div class="card-header">
+            <div>
+                <h2 class="card-title">Leave status overview</h2>
+                <p class="card-subtitle">All applications to date</p>
             </div>
-            <div class="flex items-center justify-between">
-                <div class="flex items-center">
-                    <div class="w-3 h-3 rounded-full bg-red-500 mr-3"></div>
-                    <span class="text-gray-700">Rejected</span>
+        </div>
+        <div class="card-body">
+            <?php if ($statusTotal > 0): ?>
+                <div class="mb-5 flex h-2 w-full overflow-hidden rounded-full bg-gray-100" aria-hidden="true">
+                    <?php foreach ($statusRows as $row): ?>
+                        <?php if ($row['count'] > 0): ?>
+                            <span class="h-full <?php echo $row['dot']; ?>" style="width: <?php echo round($row['count'] / $statusTotal * 100, 1); ?>%"></span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
                 </div>
-                <span class="font-semibold text-gray-900"><?php echo $rejected; ?></span>
-            </div>
-            <div class="flex items-center justify-between">
-                <div class="flex items-center">
-                    <div class="w-3 h-3 rounded-full bg-yellow-500 mr-3"></div>
-                    <span class="text-gray-700">Pending</span>
-                </div>
-                <span class="font-semibold text-gray-900"><?php echo $pending; ?></span>
-            </div>
+            <?php endif; ?>
+            <ul class="space-y-3 text-sm">
+                <?php foreach ($statusRows as $row): ?>
+                    <li class="flex items-center justify-between gap-3">
+                        <span class="flex items-center gap-2.5 text-gray-700"><span class="h-2.5 w-2.5 rounded-full <?php echo $row['dot']; ?>"></span><?php echo $row['label']; ?></span>
+                        <span class="flex items-baseline gap-2">
+                            <span class="font-semibold tabular-nums text-gray-900"><?php echo $row['count']; ?></span>
+                            <?php if ($statusTotal > 0): ?>
+                                <span class="w-10 text-right text-xs tabular-nums text-gray-400"><?php echo round($row['count'] / $statusTotal * 100); ?>%</span>
+                            <?php endif; ?>
+                        </span>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
         </div>
     </div>
 
     <!-- Recent Applications -->
-    <div class="lg:col-span-2 bg-white rounded-lg shadow-md">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h3 class="text-lg font-semibold text-gray-900">Recent Applications</h3>
+    <div class="card lg:col-span-2">
+        <div class="card-header">
+            <div>
+                <h2 class="card-title">Recent applications</h2>
+                <p class="card-subtitle">The latest leave requests from all students</p>
+            </div>
+            <a href="<?php echo BASE_URL; ?>/admin/leave_management.php" class="inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-brand-600 hover:text-brand-700">
+                View all <i class="fas fa-arrow-right text-xs"></i>
+            </a>
         </div>
-        <div class="p-6">
-            <?php if (empty($recentApplications)): ?>
-                <p class="text-center text-gray-500 py-4">No applications yet</p>
-            <?php else: ?>
-                <div class="space-y-3">
-                    <?php foreach (array_slice($recentApplications, 0, 5) as $leave): ?>
-                        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                            <div class="flex-1">
-                                <p class="font-medium text-gray-900"><?php echo sanitize($leave['student_name']); ?></p>
-                                <p class="text-xs text-gray-500">
-                                    <?php echo getLeaveTypeLabel($leave['leave_type']); ?> • <?php echo $leave['total_days']; ?> days
+        <?php if (empty($recentApplications)): ?>
+            <div class="p-5 sm:p-6">
+                <div class="empty-state">
+                    <div class="empty-state-icon"><i class="fas fa-inbox"></i></div>
+                    <p class="empty-state-title">No applications yet</p>
+                    <p class="empty-state-description">Leave applications will appear here as students submit them.</p>
+                </div>
+            </div>
+        <?php else: ?>
+            <ul class="divide-y divide-gray-100">
+                <?php foreach (array_slice($recentApplications, 0, 5) as $leave): ?>
+                    <li class="flex items-start gap-3 px-5 py-3.5 transition-colors hover:bg-gray-50/70 sm:items-center sm:px-6">
+                        <span class="avatar h-9 w-9 bg-none bg-brand-50 text-brand-700 ring-1 ring-inset ring-brand-100"><?php echo sanitize($initialsOf($leave['student_name'])); ?></span>
+                        <div class="min-w-0 flex-1 sm:flex sm:items-center sm:justify-between sm:gap-4">
+                            <div class="min-w-0">
+                                <p class="truncate text-sm font-medium text-gray-900"><?php echo sanitize($leave['student_name']); ?></p>
+                                <p class="mt-0.5 text-xs text-gray-500">
+                                    <?php echo getLeaveTypeLabel($leave['leave_type']); ?> &middot; <?php echo $leave['total_days']; ?> days
+                                    <span class="mx-1 text-gray-300">&middot;</span>
+                                    <?php echo formatDate($leave['start_date']); ?>
                                 </p>
                             </div>
-                            <?php echo getStatusBadge($leave['status']); ?>
+                            <div class="mt-2 shrink-0 sm:mt-0">
+                                <?php echo getStatusBadge($leave['status']); ?>
+                            </div>
                         </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-        </div>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
     </div>
 </div>
 

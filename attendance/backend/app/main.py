@@ -8,13 +8,17 @@ HTML; this service owns the gates, the face engine, and the evidence trail.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import os
 import secrets
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import faces, marking, reports
 from .auth import (
@@ -39,6 +43,57 @@ app = FastAPI(title="SOM PhD Attendance", docs_url=None, redoc_url=None, openapi
 
 DEVICE_COOKIE = "att_device"
 COOKIE_MAX_AGE = 400 * 24 * 3600  # browsers cap cookie lifetime at ~400 days
+CHALLENGE_TTL_SECONDS = 120
+MAX_ENROLL_FRAMES = 20
+
+
+class BodySizeLimit:
+    """Refuse an oversized request body before anything buffers it.
+
+    The multipart parser spools every upload before a handler runs, so a size
+    check inside the handler comes too late to protect memory or disk. A
+    declared Content-Length over the limit is refused outright; a body that
+    streams past it (chunked, or lying about its length) is cut off mid-read.
+    """
+
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        too_large = {"ok": False, "code": "BODY_TOO_LARGE",
+                     "message": "The upload was too large. Please try again."}
+        for name, value in scope.get("headers") or ():
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = self.max_bytes + 1
+                if declared > self.max_bytes:
+                    await JSONResponse(status_code=413, content=too_large)(scope, receive, send)
+                    return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    # FastAPI re-raises an HTTPException from body parsing as-is,
+                    # so this reaches the handler below as a normal 413.
+                    raise HTTPException(413, {k: v for k, v in too_large.items() if k != "ok"})
+            return message
+
+        await self.app(scope, limited_receive, send)
+
+
+app.add_middleware(BodySizeLimit, max_bytes=get_settings().max_body_bytes)
 
 
 @app.exception_handler(MarkError)
@@ -159,16 +214,17 @@ def mark_challenge(request: Request, me: Principal = Depends(current_student)):
 
     challenge = faces.new_challenge()
     raw = secrets.token_urlsafe(24)
-    execute(
-        "INSERT INTO att_challenges (token_hash, student_id, device_id, challenge, expires_at) "
-        "VALUES (%s,%s,%s,%s,DATE_ADD(NOW(), INTERVAL 120 SECOND))",
-        (hash_token(raw), me.student_id, device["id"], ",".join(challenge)),
-    )
+    marking.issue_challenge(me.student_id, device["id"], challenge, day,
+                            CHALLENGE_TTL_SECONDS, hash_token(raw))
     return {
         "ok": True,
         "token": raw,
         "challenge": challenge,
-        "prompts": {p: _prompt_for(p) for p in challenge},
+        "prompts": {p: _prompt_for(p) for p in set(challenge)},
+        # The client must send exactly this many frames per step, in step order:
+        # the server checks each step's pose in that step's own frames.
+        "frames_per_step": faces.FRAMES_PER_STEP,
+        "expires_in": CHALLENGE_TTL_SECONDS,
         "strict_mode": get_setting("strict_mode", "0") == "1",
     }
 
@@ -176,41 +232,102 @@ def mark_challenge(request: Request, me: Principal = Depends(current_student)):
 def _prompt_for(pose: str) -> str:
     # Deliberately no LEFT/RIGHT: which physical direction reads as +yaw depends
     # on the camera image and the model's Euler convention, and naming the wrong
-    # one made most real attempts fail. Either side proves a live head turn.
+    # one made most real attempts fail. 'other' is relative to the turn the
+    # student has just made, so it cannot be mis-scored that way.
     return {
         faces.POSE_CENTRE: "Look straight at the camera",
-        faces.POSE_TURN: "Now slowly turn your head to one side",
-        faces.POSE_LEFT: "Turn your head to one side",
-        faces.POSE_RIGHT: "Turn your head to one side",
+        faces.POSE_TURN: "Turn your head to one side",
+        faces.POSE_OTHER: "Now turn your head to the OTHER side",
     }.get(pose, "Look at the camera")
 
 
-def _consume_challenge(raw_token: str, student_id: int) -> dict:
-    """Atomically consume a challenge: the UPDATE only wins once."""
-    token_hash = hash_token(raw_token)
+def _challenge_invalid() -> MarkError:
+    return MarkError(401, "CHALLENGE_INVALID", "That attempt expired. Tap Mark Attendance again.")
+
+
+def _peek_challenge(raw_token: str, student_id: int) -> dict:
+    """The live, unconsumed challenge this token names — without using it up.
+
+    Consuming happens later, in _consume_challenge, once a face-engine slot is
+    held: a request turned away as SERVER_BUSY has not been judged, so the page
+    can resend the very same frames with the same token."""
+    row = query_one(
+        "SELECT * FROM att_challenges WHERE token_hash=%s AND student_id=%s "
+        "AND consumed_at IS NULL AND expires_at>NOW()",
+        (hash_token(raw_token), student_id),
+    )
+    steps = faces.parse_challenge(row["challenge"]) if row else None
+    if not steps:
+        raise _challenge_invalid()
+
+    # Timing, from the database clock at millisecond precision. The upper bound
+    # is the expiry above; the lower bound catches a script that fetched the
+    # sequence and posted frames it already had, faster than a person can
+    # perform the steps. issued_at comes from 2026_09_23_attendance_backend.sql;
+    # until that migration runs the lower bound is simply not enforced.
+    if "issued_at" in row:
+        timing = query_one(
+            "SELECT TIMESTAMPDIFF(MICROSECOND, issued_at, NOW(3)) AS us FROM att_challenges WHERE id=%s",
+            (row["id"],),
+        )
+        elapsed = (timing["us"] or 0) / 1e6 if timing else None
+        if elapsed is not None and elapsed < faces.MIN_SECONDS_PER_STEP * len(steps):
+            raise MarkError(400, "CHALLENGE_TOO_FAST",
+                            "That was quicker than the steps allow. Tap Mark Attendance and follow each step.")
+    row["steps"] = steps
+    return row
+
+
+def _consume_challenge(challenge_id: int) -> None:
+    """Atomically use the challenge up: the UPDATE only wins once."""
     won = execute(
         "UPDATE att_challenges SET consumed_at=NOW() "
-        "WHERE token_hash=%s AND student_id=%s AND consumed_at IS NULL AND expires_at>NOW()",
-        (token_hash, student_id),
+        "WHERE id=%s AND consumed_at IS NULL AND expires_at>NOW()",
+        (challenge_id,),
     )
     if not won:
-        raise MarkError(401, "CHALLENGE_INVALID", "That attempt expired. Tap Mark Attendance again.")
-    return query_one("SELECT * FROM att_challenges WHERE token_hash=%s", (token_hash,))
+        raise _challenge_invalid()
 
 
-@app.post("/api/mark")
-async def mark(
-    request: Request,
-    token: str = Form(...),
-    frames: list[UploadFile] = File(...),
-    strict_code: str = Form(default=""),
-    me: Principal = Depends(current_student),
-):
-    """The marking transaction. Gate order is deliberate — see marking.py."""
-    ip = client_ip(request)
-    day = today_ist()
-    ua = request.headers.get("user-agent", "")
+async def _read_frames(frames: list[UploadFile], *, expected: int | None = None,
+                       limit: int | None = None) -> list[bytes]:
+    """Read the uploaded frames, refusing anything unsafe to decode.
 
+    Only the header is inspected here (dimensions come from the JPEG header,
+    never from a decode), so a decompression bomb is turned away before it can
+    allocate anything. The body as a whole is already capped by BodySizeLimit.
+    Two byte-identical frames in one burst are refused: a camera never
+    produces them, a copied photo does.
+    """
+    if expected is not None and len(frames) != expected:
+        raise MarkError(400, "FRAME_COUNT", "Not every step was captured. Please try again.")
+    if limit is not None and len(frames) > limit:
+        raise MarkError(400, "TOO_MANY_FRAMES", "Too many camera frames were sent. Please try again.")
+    blobs: list[bytes] = []
+    for upload in frames:
+        data = await upload.read(faces.MAX_FRAME_BYTES + 1)
+        problem = faces.frame_problem(data)
+        if problem == "FRAME_TOO_LARGE":
+            raise MarkError(400, "FRAME_TOO_LARGE", "Camera frames were too large. Please try again.")
+        if problem:
+            raise MarkError(400, "BAD_FRAME", "A camera frame could not be read. Please try again.")
+        blobs.append(data)
+    if not blobs:
+        raise MarkError(400, "NO_FRAMES", "No camera frames were received. Please try again.")
+    if len({hashlib.sha256(b).digest() for b in blobs}) != len(blobs):
+        raise MarkError(400, "DUPLICATE_FRAMES", "Two camera frames were identical. Please try again.")
+    return blobs
+
+
+def _server_busy() -> MarkError:
+    return MarkError(503, "SERVER_BUSY",
+                     "The server is busy verifying other students. Please wait a few seconds and try again.")
+
+
+def _mark_gates(request: Request, me: Principal, token: str, strict_code: str,
+                ip: str | None, day: date) -> tuple[dict, bool, dict]:
+    """Every non-biometric gate, in order, then the challenge (checked, not yet
+    consumed). Runs on the threadpool — it is all database round trips."""
     try:
         marking.check_enabled()
         marking.check_source_ip(ip)
@@ -219,43 +336,39 @@ async def mark(
         strict_used = marking.check_strict_code(strict_code or None)
         marking.check_not_already_marked(me.student_id, day)
         marking.check_attempt_budget(me.student_id, day)
-        challenge_row = _consume_challenge(token, me.student_id)
+        challenge_row = _peek_challenge(token, me.student_id)
+        if device["id"] != challenge_row["device_id"]:
+            raise MarkError(401, "DEVICE_MISMATCH", "Device changed mid-attempt. Please try again.")
+        if not marking.active_template(me.student_id):
+            raise MarkError(412, "FACE_NOT_ENROLLED", "Your face is not enrolled yet. Visit the SOM office.")
     except MarkError as exc:
         marking.log_blocked(exc.code, student_id=me.student_id, source_ip=ip, day=day)
         raise
+    return device, strict_used, challenge_row
 
-    if device["id"] != challenge_row["device_id"]:
-        marking.log_blocked("DEVICE_MISMATCH", student_id=me.student_id, source_ip=ip, day=day)
-        raise MarkError(401, "DEVICE_MISMATCH", "Device changed mid-attempt. Please try again.")
 
-    blobs = [await f.read() for f in frames]
-    blobs = [b for b in blobs if b][:12]
-    if not blobs:
-        raise MarkError(400, "NO_FRAMES", "No camera frames were received. Please try again.")
-    if any(len(b) > 3_000_000 for b in blobs):
-        raise MarkError(400, "FRAME_TOO_LARGE", "Camera frames were too large. Please try again.")
-
-    student = query_one("SELECT roll_number FROM students WHERE id=%s", (me.student_id,))
-    template_row = marking.active_template(me.student_id)
-    if not template_row:
-        raise MarkError(412, "FACE_NOT_ENROLLED", "Your face is not enrolled yet. Visit the SOM office.")
-
-    images = [img for img in (faces.decode_image(b) for b in blobs) if img is not None]
-    result = faces.verify_burst(
-        images,
-        challenge_row["challenge"].split(","),
-        faces.load_template(template_row["embeddings"]),
-        others=marking.load_cohort_templates(exclude_student_id=me.student_id),
+def _judge_mark(student_id: int, blobs: list[bytes], steps: list[str]) -> faces.VerifyResult:
+    """Decode + detect + embed + judge. Runs on the face-engine pool; the cohort
+    is loaded here too so a queued request holds no parsed templates."""
+    template_row = marking.active_template(student_id)
+    own = faces.load_template(template_row["embeddings"]) if template_row else []
+    return faces.verify_burst(
+        blobs,
+        steps,
+        own,
+        others=marking.load_cohort_templates(exclude_student_id=student_id),
         **marking.thresholds(),
     )
 
+
+def _settle_mark(me: Principal, *, day: date, ip: str | None, device: dict, strict_used: bool,
+                 attempt_id: int, blobs: list[bytes], result: faces.VerifyResult):
+    """Store the evidence, write the outcome, and mark present on a pass."""
+    student = query_one("SELECT roll_number FROM students WHERE id=%s", (me.student_id,))
     frames_dir, primary_hash = marking.store_frames(student["roll_number"], day, blobs)
 
-    attempt_id = marking.record_attempt(
-        student_id=me.student_id,
-        day=day,
-        source_ip=ip,
-        device_id=device["id"],
+    marking.finish_attempt(
+        attempt_id,
         verdict=result.verdict,
         fail_code=result.fail_code,
         match_score=round(result.match_score, 4),
@@ -263,9 +376,7 @@ async def mark(
         pose_ok=result.pose_ok,
         crossmatch_student_id=result.crossmatch_student_id,
         crossmatch_score=round(result.crossmatch_score, 4),
-        challenge_spec=challenge_row["challenge"],
         frames_dir=frames_dir,
-        user_agent=ua,
         detail=result.detail,
     )
     execute("UPDATE att_devices SET last_seen_at=NOW() WHERE id=%s", (device["id"],))
@@ -341,6 +452,89 @@ async def mark(
         "message": f"Present — {now_ist().strftime('%d %b %Y, %H:%M')}",
         "marked_at_ist": now_ist().strftime("%H:%M"),
     }
+
+
+@app.post("/api/mark")
+async def mark(
+    request: Request,
+    token: str = Form(...),
+    frames: list[UploadFile] = File(...),
+    strict_code: str = Form(default=""),
+    me: Principal = Depends(current_student),
+):
+    """The marking transaction. Gate order is deliberate — see marking.py.
+
+    Async only so it can read the upload and wait for a face-engine slot
+    without holding a thread. Everything that blocks — every database round
+    trip and the face work itself — runs off the event loop, so one student's
+    verification never stalls another student's request.
+    """
+    ip = client_ip(request)
+    day = today_ist()
+    ua = request.headers.get("user-agent", "")
+
+    device, strict_used, challenge_row = await run_in_threadpool(
+        _mark_gates, request, me, token, strict_code, ip, day)
+    steps = challenge_row["steps"]
+
+    try:
+        blobs = await _read_frames(frames, expected=faces.FRAMES_PER_STEP * len(steps))
+        hashes = [hashlib.sha256(b).hexdigest() for b in blobs]
+        async with faces.engine_slot():
+            # The challenge is used up, and a budget slot claimed, only once a
+            # slot is free: a request that times out in the queue has not been
+            # judged, costs the student nothing, and can be resent as-is.
+            await run_in_threadpool(_consume_challenge, challenge_row["id"])
+            attempt_id = await run_in_threadpool(
+                marking.reserve_attempt,
+                student_id=me.student_id, day=day, source_ip=ip, device_id=device["id"],
+                challenge_spec=challenge_row["challenge"], user_agent=ua,
+            )
+            try:
+                fresh = await run_in_threadpool(
+                    marking.record_frame_hashes, me.student_id, attempt_id, hashes)
+            except Exception:
+                await run_in_threadpool(marking.settle_failed, attempt_id)
+                raise
+            if not fresh:
+                # A frame this student has submitted before: an earlier burst
+                # (or enrollment capture) sent again. Judged as a failure, with
+                # the frames kept as evidence, and it counts.
+                result = faces.VerifyResult(
+                    "fail", "REPLAYED_FRAME",
+                    "These photos were already used in an earlier attempt. This attempt has been recorded.",
+                    detail={"challenge": steps, "frame_sha256": hashes},
+                )
+            else:
+                try:
+                    result = await faces.run_in_engine(_judge_mark, me.student_id, blobs, steps)
+                except Exception:
+                    log.exception("face verification crashed (attempt %s)", attempt_id)
+                    await run_in_threadpool(marking.finish_attempt, attempt_id,
+                                            verdict="fail", fail_code="ENGINE_ERROR")
+                    raise
+    except faces.EngineBusy:
+        await run_in_threadpool(marking.log_blocked, "SERVER_BUSY",
+                                student_id=me.student_id, source_ip=ip, day=day)
+        raise _server_busy() from None
+    except MarkError as exc:
+        await run_in_threadpool(marking.log_blocked, exc.code,
+                                student_id=me.student_id, source_ip=ip, day=day)
+        raise
+
+    try:
+        return await run_in_threadpool(
+            _settle_mark, me, day=day, ip=ip, device=device, strict_used=strict_used,
+            attempt_id=attempt_id, blobs=blobs, result=result,
+        )
+    except MarkError:
+        raise           # ALREADY_MARKED: a parallel request won; the verdict stands
+    except Exception:
+        # Disk full, DB hiccup: the reserved attempt must still be finalised,
+        # and never as a failure the student pays for (see settle_failed).
+        log.exception("settling attempt %s failed", attempt_id)
+        await run_in_threadpool(marking.settle_failed, attempt_id)
+        raise
 
 
 @app.get("/api/my/history")
@@ -428,23 +622,8 @@ def enroll_start(request: Request, student_id: int = Form(...), me: Principal = 
     }
 
 
-@app.post("/api/enroll/capture")
-async def enroll_capture(
-    request: Request,
-    response: Response,
-    token: str = Form(...),
-    frames: list[UploadFile] = File(...),
-    me: Principal = Depends(current_student),
-):
-    """The student's phone submits the guided multi-angle capture.
-
-    Two independent controls, so neither alone lets an impostor enroll:
-      - the office-issued OTP proves a staff member started this session;
-      - the office-WiFi source IP proves the phone is physically in the office.
-    A leaked OTP is useless off the office network, and being on the network is
-    useless without the OTP.
-    """
-    ip = client_ip(request)
+def _enroll_gates(me: Principal, token: str, ip: str | None) -> dict:
+    """Network gate, code throttle and session lookup (database only)."""
     try:
         marking.check_enabled()
         marking.check_source_ip(ip)
@@ -479,50 +658,40 @@ async def enroll_capture(
         audit("enroll.wrong_student", actor_type="student", student_id=me.student_id,
               source_ip=ip, details={"session_student": session["student_id"]})
         raise MarkError(403, "WRONG_STUDENT", "This enrollment session belongs to a different student.")
+    return session
 
-    blobs = [await f.read() for f in frames]
-    blobs = [b for b in blobs if b][:20]
-    if not blobs:
-        raise MarkError(400, "NO_FRAMES", "No camera frames received.")
 
-    images = [img for img in (faces.decode_image(b) for b in blobs) if img is not None]
-    min_frames = get_int_setting("enrollment_min_frames", 5)
+def _build_enrollment(student_id: int, blobs: list[bytes], min_frames: int):
+    """Decode + embed the capture and check it against the cohort. Runs on the
+    face-engine pool. Returns (embeddings, quality, error_code, duplicate_of)."""
+    import numpy as np
+
+    images = [faces.decode_image(b) for b in blobs]
     embeddings, quality, error = faces.build_template(images, min_frames)
     if error:
-        message = {
-            "NO_FACE": "No face detected. Hold the phone at eye level in good light.",
-            "INSUFFICIENT_QUALITY_FRAMES": "Not enough clear frames. Please retry in better light.",
-            "INCONSISTENT_FRAMES": "The captures did not look like the same person. Please retry.",
-        }.get(error, "Enrollment capture failed. Please retry.")
-        raise MarkError(422, error, message)
+        return [], quality, error, None
 
     # A face that already belongs to another student must never enroll twice —
     # that would be account-swapping by construction.
-    import numpy as np
-
     centre = np.asarray(embeddings[0], dtype=np.float32)
-    for other_id, tmpl in marking.load_cohort_templates(exclude_student_id=me.student_id):
-        if faces.best_score(centre, tmpl) > marking.thresholds()["match_threshold"]:
-            audit("enroll.duplicate_face", actor_type="student", student_id=me.student_id,
-                  source_ip=client_ip(request), details={"matches_student": other_id})
-            raise MarkError(
-                409, "FACE_ALREADY_ENROLLED",
-                "This face appears to be enrolled for another student. Please see the office.",
-            )
+    threshold = marking.thresholds()["match_threshold"]
+    for other_id, tmpl in marking.load_cohort_templates(exclude_student_id=student_id):
+        if faces.best_score(centre, tmpl) > threshold:
+            return embeddings, quality, "FACE_ALREADY_ENROLLED", other_id
+    return embeddings, quality, None, None
 
+
+def _finish_enrollment(me: Principal, *, session: dict, blobs: list[bytes], embeddings: list,
+                       quality: float, ua: str) -> str:
+    """Store the evidence, swap in the new template and device. Returns the raw
+    device token for the cookie."""
     student = query_one("SELECT roll_number FROM students WHERE id=%s", (me.student_id,))
     frames_dir, _ = marking.store_frames(student["roll_number"], today_ist(), blobs, kind="enroll")
 
-    # Revoke-then-issue so a student can never hold two active devices.
-    execute(
-        "UPDATE att_face_templates SET status='revoked', revoked_at=NOW(), revoke_reason='re-enrolled' "
-        "WHERE student_id=%s AND status='active'",
-        (me.student_id,),
-    )
-    execute(
-        "UPDATE att_devices SET status='revoked', revoked_at=NOW() WHERE student_id=%s AND status='active'",
-        (me.student_id,),
-    )
+    # Revoke-then-issue so a student can never hold two active devices. The
+    # superseded template's embeddings are erased as it is revoked.
+    marking.revoke_templates(me.student_id, reason="re-enrolled")
+    marking.revoke_devices(me.student_id)
     execute(
         "INSERT INTO att_face_templates (student_id, embeddings, embedding_count, quality_score, "
         "frames_dir, enrolled_by, status) VALUES (%s,%s,%s,%s,%s,%s,'active')",
@@ -533,9 +702,67 @@ async def enroll_capture(
     device_token = secrets.token_urlsafe(32)
     execute(
         "INSERT INTO att_devices (student_id, token_hash, ua_hint, status) VALUES (%s,%s,%s,'active')",
-        (me.student_id, hash_token(device_token), request.headers.get("user-agent", "")[:255]),
+        (me.student_id, hash_token(device_token), ua[:255]),
     )
     execute("UPDATE att_enroll_sessions SET status='used', used_at=NOW() WHERE id=%s", (session["id"],))
+    # The enrollment frames sit on the student's phone as much as anywhere;
+    # remember them so they can never be replayed as a marking burst.
+    marking.record_frame_hashes(me.student_id, None,
+                                [hashlib.sha256(b).hexdigest() for b in blobs], allow_seen=True)
+    return device_token
+
+
+@app.post("/api/enroll/capture")
+async def enroll_capture(
+    request: Request,
+    response: Response,
+    token: str = Form(...),
+    frames: list[UploadFile] = File(...),
+    me: Principal = Depends(current_student),
+):
+    """The student's phone submits the guided multi-angle capture.
+
+    Two independent controls, so neither alone lets an impostor enroll:
+      - the office-issued OTP proves a staff member started this session;
+      - the office-WiFi source IP proves the phone is physically in the office.
+    A leaked OTP is useless off the office network, and being on the network is
+    useless without the OTP.
+
+    Like /mark, the blocking work runs off the event loop.
+    """
+    ip = client_ip(request)
+    session = await run_in_threadpool(_enroll_gates, me, token, ip)
+
+    blobs = await _read_frames(frames, limit=MAX_ENROLL_FRAMES)
+    min_frames = await run_in_threadpool(get_int_setting, "enrollment_min_frames", 5)
+    try:
+        async with faces.engine_slot():
+            embeddings, quality, error, duplicate_of = await faces.run_in_engine(
+                _build_enrollment, me.student_id, blobs, min_frames)
+    except faces.EngineBusy:
+        raise MarkError(503, "SERVER_BUSY",
+                        "The server is busy. Wait a few seconds and start enrollment again.") from None
+
+    if error == "FACE_ALREADY_ENROLLED":
+        await run_in_threadpool(
+            lambda: audit("enroll.duplicate_face", actor_type="student", student_id=me.student_id,
+                          source_ip=ip, details={"matches_student": duplicate_of}))
+        raise MarkError(
+            409, "FACE_ALREADY_ENROLLED",
+            "This face appears to be enrolled for another student. Please see the office.",
+        )
+    if error:
+        message = {
+            "NO_FACE": "No face detected. Hold the phone at eye level in good light.",
+            "INSUFFICIENT_QUALITY_FRAMES": "Not enough clear frames. Please retry in better light.",
+            "INCONSISTENT_FRAMES": "The captures did not look like the same person. Please retry.",
+        }.get(error, "Enrollment capture failed. Please retry.")
+        raise MarkError(422, error, message)
+
+    device_token = await run_in_threadpool(
+        _finish_enrollment, me, session=session, blobs=blobs, embeddings=embeddings,
+        quality=quality, ua=request.headers.get("user-agent", ""),
+    )
 
     response.set_cookie(
         DEVICE_COOKIE,
@@ -546,13 +773,9 @@ async def enroll_capture(
         samesite="lax",
         path="/phdtimeoff",
     )
-    audit(
-        "enroll.completed",
-        actor_type="student",
-        student_id=me.student_id,
-        source_ip=client_ip(request),
-        details={"frames": len(embeddings), "quality": round(quality, 4)},
-    )
+    await run_in_threadpool(
+        lambda: audit("enroll.completed", actor_type="student", student_id=me.student_id,
+                      source_ip=ip, details={"frames": len(embeddings), "quality": round(quality, 4)}))
     return {
         "ok": True,
         "message": "Enrollment complete. This phone is now your attendance device.",
@@ -586,9 +809,11 @@ def admin_today(day: str | None = None, me: Principal = Depends(current_admin)):
         "WHERE a.date_ist=%s AND a.verdict='pending' ORDER BY a.at_utc",
         (target,),
     )
+    # Real failures only: server errors, refused reservations and attempts still
+    # in flight are not the student's failures (marking.REAL_FAILURE_SQL).
     failed = query_all(
         "SELECT a.*, s.roll_number FROM att_attempts a LEFT JOIN students s ON s.id=a.student_id "
-        "WHERE a.date_ist=%s AND a.verdict='fail' ORDER BY a.at_utc DESC LIMIT 100",
+        f"WHERE a.date_ist=%s AND {marking.REAL_FAILURE_SQL} ORDER BY a.at_utc DESC LIMIT 100",
         (target,),
     )
 
@@ -954,19 +1179,12 @@ def admin_revoke(
     reason: str = Form(...),
     me: Principal = Depends(current_admin),
 ):
-    """Revoke a student's face template and bound device (lost/changed phone)."""
+    """Revoke a student's face template and bound device (lost/changed phone,
+    or a leaver). The template's embeddings are erased as part of the revoke."""
     if not reason.strip():
         raise MarkError(400, "REASON_REQUIRED", "A reason is required.")
-    execute(
-        "UPDATE att_face_templates SET status='revoked', revoked_at=NOW(), revoked_by=%s, "
-        "revoke_reason=%s WHERE student_id=%s AND status='active'",
-        (me.user_id, reason.strip(), student_id),
-    )
-    execute(
-        "UPDATE att_devices SET status='revoked', revoked_at=NOW(), revoked_by=%s "
-        "WHERE student_id=%s AND status='active'",
-        (me.user_id, student_id),
-    )
+    marking.revoke_templates(student_id, reason=reason.strip(), revoked_by=me.user_id)
+    marking.revoke_devices(student_id, revoked_by=me.user_id)
     audit("enrollment.revoked", actor_type="admin", user_id=me.user_id, student_id=student_id,
           source_ip=client_ip(request), details={"reason": reason.strip()})
     return {"ok": True}
@@ -1066,11 +1284,17 @@ def job_monthly_report(request: Request, year: int = Form(default=0), month: int
 
 @app.post("/api/jobs/purge-frames")
 def job_purge_frames(request: Request):
+    """Nightly biometric retention: evidence frames past retention, plus the
+    templates of revoked enrollments and deactivated students (see
+    marking.purge_templates). Kept on this one route so the existing host
+    timers/crontab pick it up unchanged."""
     _require_job_token(request)
     days = get_int_setting("frame_retention_days", 60)
     removed = reports.purge_frames(days)
     audit("frames.purged", details={"removed": removed, "older_than_days": days})
-    return {"ok": True, "removed": removed}
+    templates = marking.purge_templates()
+    audit("templates.purged", details=templates)
+    return {"ok": True, "removed": removed, **templates}
 
 
 @app.post("/api/jobs/cleanup")
@@ -1083,10 +1307,10 @@ def job_cleanup(request: Request):
 
 
 def _require_job_token(request: Request) -> None:
-    import hmac as _hmac
-    import os as _os
-
-    expected = _os.environ.get("JOB_TOKEN", "")
+    """Every /api/jobs/* route calls this first. An unset JOB_TOKEN refuses
+    everything; the comparison is constant-time. Bytes, not str: compare_digest
+    raises TypeError on non-ASCII str, which turned a junk header into a 500."""
+    expected = os.environ.get("JOB_TOKEN", "")
     supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    if not expected or not _hmac.compare_digest(expected, supplied):
+    if not expected or not hmac.compare_digest(expected.encode(), supplied.encode()):
         raise MarkError(401, "BAD_JOB_TOKEN", "Unauthorised.")

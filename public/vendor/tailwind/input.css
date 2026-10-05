@@ -1,3 +1,245 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Design system for the portal.
+ *
+ * Built into tailwind.min.css (see tailwind.config.js for the command), so the
+ * components below share the theme's tokens: the brand palette, slate neutrals,
+ * soft shadows and Inter. Pages compose these with ordinary utilities; a utility
+ * on the element always wins over a component class here.
+ */
+
+@layer base {
+  /* Inter, vendored (OFL-1.1, public/vendor/inter/LICENSE) — no external font CDN. */
+  @font-face {
+    font-family: 'Inter Variable';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url('../inter/inter-latin-wght-normal.woff2') format('woff2-variations');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'Inter Variable';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url('../inter/inter-latin-ext-wght-normal.woff2') format('woff2-variations');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  body {
+    @apply bg-gray-50 text-gray-800;
+  }
+  h1, h2, h3, h4 {
+    @apply tracking-tight;
+  }
+  ::selection {
+    @apply bg-brand-100 text-brand-900;
+  }
+  /* Chrome paints an unstyled <select> grey; every other control is white. */
+  select {
+    background-color: #fff;
+  }
+  input[type='checkbox'], input[type='radio'] {
+    accent-color: theme('colors.brand.600');
+  }
+}
+
+@layer components {
+  /* ---- Layout ------------------------------------------------------------ */
+  .page-header {
+    @apply mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between;
+  }
+  .page-eyebrow {
+    @apply mb-1 text-xs font-semibold uppercase tracking-wider text-brand-600;
+  }
+  .page-title {
+    @apply text-2xl font-semibold tracking-tight text-gray-900 sm:text-3xl;
+  }
+  .page-subtitle {
+    @apply mt-1.5 text-sm text-gray-500 sm:text-base;
+  }
+  .back-link {
+    @apply mb-4 inline-flex items-center gap-2 text-sm font-medium text-gray-500 transition-colors hover:text-brand-700;
+  }
+
+  /* ---- Surfaces ---------------------------------------------------------- */
+  .card {
+    @apply rounded-2xl border border-gray-200/80 bg-white shadow-sm;
+  }
+  .card-header {
+    @apply flex items-center justify-between gap-4 border-b border-gray-100 px-5 py-4 sm:px-6;
+  }
+  .card-title {
+    @apply text-base font-semibold text-gray-900;
+  }
+  .card-subtitle {
+    @apply mt-0.5 text-sm text-gray-500;
+  }
+  .card-body {
+    @apply p-5 sm:p-6;
+  }
+  .card-footer {
+    @apply rounded-b-2xl border-t border-gray-100 bg-gray-50/70 px-5 py-4 sm:px-6;
+  }
+  .card-hover {
+    @apply transition duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-md;
+  }
+
+  /* ---- Stat tiles -------------------------------------------------------- */
+  .stat-tile {
+    @apply card flex items-start gap-4 p-5;
+  }
+  .stat-label {
+    @apply text-sm font-medium text-gray-500;
+  }
+  .stat-value {
+    @apply mt-1 text-2xl font-semibold tracking-tight text-gray-900 sm:text-3xl;
+  }
+  .stat-meta {
+    @apply mt-1 text-xs text-gray-500;
+  }
+  .icon-chip {
+    @apply inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-lg ring-1 ring-inset;
+  }
+  .icon-chip-sm {
+    @apply inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-sm ring-1 ring-inset;
+  }
+  .chip-brand   { @apply bg-brand-50 text-brand-600 ring-brand-100; }
+  .chip-violet  { @apply bg-violet-50 text-violet-600 ring-violet-100; }
+  .chip-rose    { @apply bg-rose-50 text-rose-600 ring-rose-100; }
+  .chip-emerald { @apply bg-emerald-50 text-emerald-600 ring-emerald-100; }
+  .chip-amber   { @apply bg-amber-50 text-amber-600 ring-amber-100; }
+  .chip-sky     { @apply bg-sky-50 text-sky-600 ring-sky-100; }
+  .chip-slate   { @apply bg-gray-100 text-gray-600 ring-gray-200; }
+
+  /* Balance meter */
+  .meter {
+    @apply h-1.5 w-full overflow-hidden rounded-full bg-gray-100;
+  }
+  .meter > span {
+    @apply block h-full rounded-full transition-[width] duration-500;
+  }
+
+  /* ---- Buttons ----------------------------------------------------------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg px-4 py-2.5 text-sm font-semibold transition duration-150
+           focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-500/20 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-sm { @apply px-3 py-1.5 text-xs; }
+  .btn-lg { @apply px-5 py-3 text-base; }
+  .btn-primary   { @apply bg-brand-600 text-white shadow-sm hover:bg-brand-700 active:bg-brand-800; }
+  .btn-secondary { @apply bg-white text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50 hover:text-gray-900; }
+  .btn-ghost     { @apply text-gray-600 hover:bg-gray-100 hover:text-gray-900; }
+  .btn-success   { @apply bg-emerald-600 text-white shadow-sm hover:bg-emerald-700; }
+  .btn-danger    { @apply bg-rose-600 text-white shadow-sm hover:bg-rose-700; }
+  .btn-warning   { @apply bg-amber-500 text-white shadow-sm hover:bg-amber-600; }
+  .btn-soft-danger  { @apply bg-rose-50 text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-100; }
+  .btn-soft-success { @apply bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200 hover:bg-emerald-100; }
+  .btn-icon {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-lg text-sm text-gray-500 transition hover:bg-gray-100 hover:text-gray-900
+           focus:outline-none focus-visible:ring-4 focus-visible:ring-brand-500/20;
+  }
+
+  /* ---- Forms ------------------------------------------------------------- */
+  .form-label {
+    @apply mb-1.5 block text-sm font-medium text-gray-700;
+  }
+  .form-input, .form-select, .form-textarea {
+    @apply block w-full rounded-lg border border-gray-300 bg-white px-3.5 py-2.5 text-sm text-gray-900 shadow-sm transition
+           placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-4 focus:ring-brand-500/15
+           disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500;
+  }
+  .form-help { @apply mt-1.5 text-xs text-gray-500; }
+  .form-error { @apply mt-1.5 text-xs font-medium text-rose-600; }
+
+  /* ---- Alerts ------------------------------------------------------------ */
+  .alert {
+    @apply flex items-start gap-3 rounded-xl border px-4 py-3.5 text-sm;
+  }
+  .alert-success { @apply border-emerald-200 bg-emerald-50 text-emerald-800; }
+  .alert-error   { @apply border-rose-200 bg-rose-50 text-rose-800; }
+  .alert-warning { @apply border-amber-200 bg-amber-50 text-amber-900; }
+  .alert-info    { @apply border-brand-200 bg-brand-50 text-brand-800; }
+
+  /* ---- Badges (getStatusBadge / getLeaveTypeBadge emit these) ------------ */
+  .badge {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+  .badge-pending   { @apply bg-amber-50 text-amber-800 ring-amber-200; }
+  .badge-approved  { @apply bg-emerald-50 text-emerald-700 ring-emerald-200; }
+  .badge-rejected  { @apply bg-rose-50 text-rose-700 ring-rose-200; }
+  .badge-cancelled { @apply bg-gray-100 text-gray-600 ring-gray-200; }
+  .badge-combined  { @apply bg-violet-50 text-violet-700 ring-violet-200; }
+  .badge-routing   { @apply bg-orange-50 text-orange-800 ring-orange-200; }
+  .badge-personal  { @apply bg-violet-50 text-violet-700 ring-violet-200; }
+  .badge-medical   { @apply bg-rose-50 text-rose-700 ring-rose-200; }
+  .badge-academic  { @apply bg-sky-50 text-sky-700 ring-sky-200; }
+  .badge-neutral   { @apply bg-gray-100 text-gray-700 ring-gray-200; }
+  .badge-brand     { @apply bg-brand-50 text-brand-700 ring-brand-200; }
+
+  /* ---- Tables ------------------------------------------------------------ */
+  .table-modern {
+    @apply min-w-full text-left text-sm;
+  }
+  .table-modern thead th {
+    @apply whitespace-nowrap border-b border-gray-200 bg-gray-50/80 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-500;
+  }
+  .table-modern tbody td {
+    @apply border-b border-gray-100 px-4 py-3.5 align-middle text-gray-700;
+  }
+  .table-modern tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .table-modern tbody tr {
+    @apply transition-colors hover:bg-gray-50/70;
+  }
+
+  /* ---- Empty states ------------------------------------------------------ */
+  .empty-state {
+    @apply rounded-xl border border-dashed border-gray-300 bg-gray-50/60 px-6 py-12 text-center;
+  }
+  .empty-state-icon {
+    @apply mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-white text-xl text-gray-400 shadow-sm ring-1 ring-gray-200;
+  }
+  .empty-state-title {
+    @apply text-sm font-semibold text-gray-900;
+  }
+  .empty-state-description {
+    @apply mx-auto mt-1 max-w-sm text-sm text-gray-500;
+  }
+
+  /* ---- Navigation -------------------------------------------------------- */
+  .nav-pill {
+    @apply inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900;
+  }
+  .nav-pill-active {
+    @apply bg-brand-50 text-brand-700 hover:bg-brand-50 hover:text-brand-700;
+  }
+  .menu-panel {
+    @apply rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg;
+  }
+  .menu-item {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 hover:text-gray-900;
+  }
+  .menu-item-active {
+    @apply bg-brand-50 font-medium text-brand-700 hover:bg-brand-50 hover:text-brand-700;
+  }
+  .avatar {
+    @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-violet-500 text-xs font-semibold text-white;
+  }
+
+  /* ---- Modals ------------------------------------------------------------ */
+  .modal-panel {
+    @apply w-full max-w-lg rounded-2xl bg-white shadow-2xl ring-1 ring-gray-900/5;
+  }
+}

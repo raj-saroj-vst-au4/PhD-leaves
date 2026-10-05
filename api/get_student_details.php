@@ -11,8 +11,9 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-// Check if user is logged in and is admin
-if (!isset($_SESSION['user_id']) || getCurrentUserRole() !== 'admin') {
+// requireLogin() applies the idle timeout (JSON 401 for /api/); then admin only.
+requireLogin();
+if (getCurrentUserRole() !== 'admin') {
     http_response_code(403);
     echo json_encode(['error' => 'Unauthorized']);
     exit;

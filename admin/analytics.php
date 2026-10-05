@@ -14,8 +14,10 @@ require_once __DIR__ . '/../classes/User.php';
 $leaveClass = new Leave();
 $userClass = new User();
 
-// Get all data
-$allLeaves = $leaveClass->getAll([]);
+// Get all data. 'combined' rows are superseded duplicates (combineLeaves()
+// inserts one application spanning the originals), so counting them would
+// double the totals.
+$allLeaves = array_values(array_filter($leaveClass->getAll([]), fn($l) => $l['status'] !== 'combined'));
 $allStudents = $userClass->getAllStudents(true);
 $allFaculty = $userClass->getAllByRole('faculty', true);
 
@@ -25,7 +27,9 @@ $totalFaculty = count($allFaculty);
 $totalLeaves = count($allLeaves);
 $approvedCount = count(array_filter($allLeaves, fn($l) => $l['status'] === 'approved'));
 $rejectedCount = count(array_filter($allLeaves, fn($l) => $l['status'] === 'rejected'));
-$pendingCount = $totalLeaves - $approvedCount - $rejectedCount;
+// Only applications still in the approval chain. "Everything neither approved
+// nor rejected" also counted cancelled (and combined) applications as pending.
+$pendingCount = count(array_filter($allLeaves, fn($l) => in_array($l['status'], Leave::PENDING_STATUSES, true)));
 
 // Leave type statistics
 $personal = count(array_filter($allLeaves, fn($l) => $l['leave_type'] === 'personal'));
@@ -37,10 +41,14 @@ $approvalRate = $totalLeaves > 0 ? round(($approvedCount / $totalLeaves) * 100, 
 $rejectionRate = $totalLeaves > 0 ? round(($rejectedCount / $totalLeaves) * 100, 1) : 0;
 $avgPerStudent = $totalStudents > 0 ? round($totalLeaves / $totalStudents, 1) : 0;
 
-// Monthly data (for trend chart)
+// Monthly data (for trend chart): the last 12 calendar months. Step back from
+// the 1st of this month: strtotime("-$i months") from today overflows on the
+// 29th-31st (31 March minus one month is "31 February" = 3 March), so on those
+// days some months repeated, overwrote each other, and five vanished from the chart.
 $monthlyData = [];
+$firstOfThisMonth = new DateTime('first day of this month');
 for ($i = 11; $i >= 0; $i--) {
-    $month = date('Y-m', strtotime("-$i months"));
+    $month = (clone $firstOfThisMonth)->modify("-$i months")->format('Y-m');
     $monthlyData[$month] = [
         'approved' => 0,
         'rejected' => 0,
@@ -68,256 +76,279 @@ foreach ($allLeaves as $leave) {
             $monthlyData[$month]['approved']++;
         } elseif ($status === 'rejected') {
             $monthlyData[$month]['rejected']++;
-        } else {
+        } elseif (in_array($status, Leave::PENDING_STATUSES, true)) {
             $monthlyData[$month]['pending']++;
         }
     }
 }
 ?>
 
-<div class="mb-6">
-    <h1 class="text-3xl font-bold text-gray-900">System Analytics</h1>
-    <p class="text-gray-600 mt-2">Comprehensive statistics and insights</p>
+<div class="page-header">
+    <div>
+        <p class="page-eyebrow">Admin</p>
+        <h1 class="page-title">System Analytics</h1>
+        <p class="page-subtitle">Comprehensive statistics and insights</p>
+    </div>
 </div>
 
-<!-- Overview Cards -->
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-    <div class="bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm opacity-90 uppercase tracking-wide">Active Students</p>
-                <p class="text-4xl font-bold mt-1"><?php echo $totalStudents; ?></p>
-            </div>
-            <i class="fas fa-user-graduate text-5xl opacity-30"></i>
+<!-- Overview -->
+<div class="mb-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+    <div class="stat-tile gap-3 p-4 sm:gap-4 sm:p-5">
+        <span class="icon-chip chip-brand hidden sm:inline-flex"><i class="fas fa-user-graduate"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label">Active Students</p>
+            <p class="stat-value"><?php echo $totalStudents; ?></p>
         </div>
     </div>
-
-    <div class="bg-gradient-to-br from-green-500 to-green-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm opacity-90 uppercase tracking-wide">Total Applications</p>
-                <p class="text-4xl font-bold mt-1"><?php echo $totalLeaves; ?></p>
-            </div>
-            <i class="fas fa-file-alt text-5xl opacity-30"></i>
+    <div class="stat-tile gap-3 p-4 sm:gap-4 sm:p-5">
+        <span class="icon-chip chip-sky hidden sm:inline-flex"><i class="fas fa-file-alt"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label">Total Applications</p>
+            <p class="stat-value"><?php echo $totalLeaves; ?></p>
         </div>
     </div>
-
-    <div class="bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm opacity-90 uppercase tracking-wide">Approved</p>
-                <p class="text-4xl font-bold mt-1"><?php echo $approvedCount; ?></p>
-            </div>
-            <i class="fas fa-check-circle text-5xl opacity-30"></i>
+    <div class="stat-tile gap-3 p-4 sm:gap-4 sm:p-5">
+        <span class="icon-chip chip-emerald hidden sm:inline-flex"><i class="fas fa-check-circle"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label">Approved</p>
+            <p class="stat-value"><?php echo $approvedCount; ?></p>
         </div>
     </div>
-
-    <div class="bg-gradient-to-br from-red-500 to-red-600 text-white rounded-lg shadow-lg p-6">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm opacity-90 uppercase tracking-wide">Rejected</p>
-                <p class="text-4xl font-bold mt-1"><?php echo $rejectedCount; ?></p>
-            </div>
-            <i class="fas fa-times-circle text-5xl opacity-30"></i>
+    <div class="stat-tile gap-3 p-4 sm:gap-4 sm:p-5">
+        <span class="icon-chip chip-rose hidden sm:inline-flex"><i class="fas fa-times-circle"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label">Rejected</p>
+            <p class="stat-value"><?php echo $rejectedCount; ?></p>
         </div>
     </div>
 </div>
 
 <?php if ($totalLeaves === 0): ?>
     <!-- Empty State -->
-    <div class="bg-white rounded-lg shadow-md p-12 text-center mb-8">
-        <i class="fas fa-chart-pie text-6xl text-gray-300 mb-4"></i>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">No Data Available</h3>
-        <p class="text-gray-600">Analytics will appear once leave applications are submitted</p>
+    <div class="card mb-6 p-5 sm:p-6">
+        <div class="empty-state">
+            <div class="empty-state-icon"><i class="fas fa-chart-pie"></i></div>
+            <h3 class="empty-state-title">No data available</h3>
+            <p class="empty-state-description">Analytics will appear once leave applications are submitted</p>
+        </div>
     </div>
 <?php else: ?>
     <!-- Charts Row 1 -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+    <div class="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
         <!-- Leave Type Distribution -->
-        <div class="bg-white rounded-lg shadow-md p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">
-                <i class="fas fa-chart-pie text-blue-600 mr-2"></i>Leave Type Distribution
-            </h3>
-            <div style="position: relative; height: 250px;">
-                <canvas id="typeChart"></canvas>
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">Leave Type Distribution</h3>
+                    <p class="card-subtitle">All applications by leave type</p>
+                </div>
+                <span class="icon-chip-sm chip-violet"><i class="fas fa-chart-pie"></i></span>
+            </div>
+            <div class="card-body">
+                <div class="relative h-64 sm:h-72">
+                    <canvas id="typeChart"></canvas>
+                </div>
             </div>
         </div>
 
         <!-- Status Distribution -->
-        <div class="bg-white rounded-lg shadow-md p-6">
-            <h3 class="text-lg font-semibold text-gray-900 mb-4">
-                <i class="fas fa-chart-donut text-purple-600 mr-2"></i>Application Status
-            </h3>
-            <div style="position: relative; height: 250px;">
-                <canvas id="statusChart"></canvas>
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">Application Status</h3>
+                    <p class="card-subtitle">Approved, rejected and still in the approval chain</p>
+                </div>
+                <span class="icon-chip-sm chip-emerald"><i class="fas fa-tasks"></i></span>
+            </div>
+            <div class="card-body">
+                <div class="relative h-64 sm:h-72">
+                    <canvas id="statusChart"></canvas>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Monthly Trend Chart -->
-    <div class="bg-white rounded-lg shadow-md p-6 mb-8">
-        <h3 class="text-lg font-semibold text-gray-900 mb-4">
-            <i class="fas fa-chart-line text-green-600 mr-2"></i>Monthly Trend (Last 12 Months)
-        </h3>
-        <div style="position: relative; height: 300px;">
-            <canvas id="trendChart"></canvas>
+    <div class="card mb-6">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">Monthly Trend</h3>
+                <p class="card-subtitle">Applications by month submitted, last 12 months</p>
+            </div>
+            <span class="icon-chip-sm chip-brand"><i class="fas fa-chart-line"></i></span>
+        </div>
+        <div class="card-body">
+            <div class="relative h-72 sm:h-80">
+                <canvas id="trendChart"></canvas>
+            </div>
         </div>
     </div>
 <?php endif; ?>
 
 <!-- Key Metrics & System Health -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
     <!-- Key Metrics -->
-    <div class="bg-white rounded-lg shadow-md p-6">
-        <h3 class="text-lg font-semibold text-gray-900 mb-4">
-            <i class="fas fa-analytics text-orange-600 mr-2"></i>Key Metrics
-        </h3>
-        <div class="space-y-4">
-            <div class="flex justify-between items-center p-4 bg-gradient-to-r from-green-50 to-green-100 rounded-lg">
-                <span class="text-gray-700 font-medium">Approval Rate</span>
-                <span class="text-2xl font-bold text-green-600"><?php echo $approvalRate; ?>%</span>
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">Key Metrics</h3>
+                <p class="card-subtitle">Across all applications</p>
             </div>
-            <div class="flex justify-between items-center p-4 bg-gradient-to-r from-red-50 to-red-100 rounded-lg">
-                <span class="text-gray-700 font-medium">Rejection Rate</span>
-                <span class="text-2xl font-bold text-red-600"><?php echo $rejectionRate; ?>%</span>
+            <span class="icon-chip-sm chip-amber"><i class="fas fa-chart-bar"></i></span>
+        </div>
+        <div class="card-body space-y-5">
+            <div>
+                <div class="flex items-baseline justify-between gap-4">
+                    <span class="text-sm font-medium text-gray-600">Approval Rate</span>
+                    <span class="text-xl font-semibold tabular-nums text-gray-900"><?php echo $approvalRate; ?>%</span>
+                </div>
+                <div class="meter mt-2"><span class="bg-emerald-500" style="width: <?php echo min(100, max(0, (float) $approvalRate)); ?>%"></span></div>
             </div>
-            <div class="flex justify-between items-center p-4 bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg">
-                <span class="text-gray-700 font-medium">Avg Applications/Student</span>
-                <span class="text-2xl font-bold text-blue-600"><?php echo $avgPerStudent; ?></span>
+            <div>
+                <div class="flex items-baseline justify-between gap-4">
+                    <span class="text-sm font-medium text-gray-600">Rejection Rate</span>
+                    <span class="text-xl font-semibold tabular-nums text-gray-900"><?php echo $rejectionRate; ?>%</span>
+                </div>
+                <div class="meter mt-2"><span class="bg-rose-500" style="width: <?php echo min(100, max(0, (float) $rejectionRate)); ?>%"></span></div>
             </div>
-            <div class="flex justify-between items-center p-4 bg-gradient-to-r from-yellow-50 to-yellow-100 rounded-lg">
-                <span class="text-gray-700 font-medium">Pending Applications</span>
-                <span class="text-2xl font-bold text-yellow-600"><?php echo $pendingCount; ?></span>
+            <div class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+                <div class="rounded-xl border border-gray-200 px-4 py-3">
+                    <p class="flex items-center gap-2 text-xs font-medium text-gray-500"><i class="fas fa-user-graduate text-brand-500"></i>Avg Applications/Student</p>
+                    <p class="mt-1 text-xl font-semibold tabular-nums text-gray-900"><?php echo $avgPerStudent; ?></p>
+                </div>
+                <div class="rounded-xl border border-gray-200 px-4 py-3">
+                    <p class="flex items-center gap-2 text-xs font-medium text-gray-500"><i class="fas fa-hourglass-half text-amber-500"></i>Pending Applications</p>
+                    <p class="mt-1 text-xl font-semibold tabular-nums text-gray-900"><?php echo $pendingCount; ?></p>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- System Health -->
-    <div class="bg-white rounded-lg shadow-md p-6">
-        <h3 class="text-lg font-semibold text-gray-900 mb-4">
-            <i class="fas fa-heartbeat text-red-600 mr-2"></i>System Health
-        </h3>
-        <div class="space-y-4">
-            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                <div class="flex items-center">
-                    <i class="fas fa-database text-2xl text-blue-600 mr-3"></i>
-                    <span class="text-gray-700 font-medium">Database</span>
-                </div>
-                <span class="px-3 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                    <i class="fas fa-check-circle mr-1"></i>Healthy
-                </span>
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">System Health</h3>
+                <p class="card-subtitle">Core services</p>
             </div>
-            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                <div class="flex items-center">
-                    <i class="fas fa-envelope text-2xl text-purple-600 mr-3"></i>
-                    <span class="text-gray-700 font-medium">Email Service</span>
+            <span class="icon-chip-sm chip-rose"><i class="fas fa-heartbeat"></i></span>
+        </div>
+        <div class="divide-y divide-gray-100 px-5 sm:px-6">
+            <div class="flex items-center justify-between gap-3 py-3.5">
+                <div class="flex items-center gap-3">
+                    <span class="icon-chip-sm chip-brand"><i class="fas fa-database"></i></span>
+                    <span class="text-sm font-medium text-gray-700">Database</span>
                 </div>
-                <span class="px-3 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                    <i class="fas fa-check-circle mr-1"></i>Active
-                </span>
+                <span class="badge badge-approved"><i class="fas fa-check-circle"></i>Healthy</span>
             </div>
-            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                <div class="flex items-center">
-                    <i class="fas fa-clock text-2xl text-green-600 mr-3"></i>
-                    <span class="text-gray-700 font-medium">Cron Jobs</span>
+            <div class="flex items-center justify-between gap-3 py-3.5">
+                <div class="flex items-center gap-3">
+                    <span class="icon-chip-sm chip-violet"><i class="fas fa-envelope"></i></span>
+                    <span class="text-sm font-medium text-gray-700">Email Service</span>
                 </div>
-                <span class="px-3 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                    <i class="fas fa-check-circle mr-1"></i>Scheduled
-                </span>
+                <span class="badge badge-approved"><i class="fas fa-check-circle"></i>Active</span>
             </div>
-            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                <div class="flex items-center">
-                    <i class="fas fa-shield-alt text-2xl text-orange-600 mr-3"></i>
-                    <span class="text-gray-700 font-medium">Security</span>
+            <div class="flex items-center justify-between gap-3 py-3.5">
+                <div class="flex items-center gap-3">
+                    <span class="icon-chip-sm chip-emerald"><i class="fas fa-clock"></i></span>
+                    <span class="text-sm font-medium text-gray-700">Cron Jobs</span>
                 </div>
-                <span class="px-3 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                    <i class="fas fa-check-circle mr-1"></i>Enabled
-                </span>
+                <span class="badge badge-approved"><i class="fas fa-check-circle"></i>Scheduled</span>
+            </div>
+            <div class="flex items-center justify-between gap-3 py-3.5">
+                <div class="flex items-center gap-3">
+                    <span class="icon-chip-sm chip-amber"><i class="fas fa-shield-alt"></i></span>
+                    <span class="text-sm font-medium text-gray-700">Security</span>
+                </div>
+                <span class="badge badge-approved"><i class="fas fa-check-circle"></i>Enabled</span>
             </div>
         </div>
     </div>
 </div>
 
 <!-- Admin Activity Log -->
-<div class="bg-white rounded-lg shadow-md mt-8">
-    <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-        <h3 class="text-lg font-semibold text-gray-900">
-            <i class="fas fa-history text-indigo-600 mr-2"></i>Recent Activity Log
-        </h3>
-        <span class="text-sm text-gray-500">Last 50 actions</span>
+<div class="card mt-6 overflow-hidden">
+    <div class="card-header">
+        <div>
+            <h3 class="card-title">Recent Activity Log</h3>
+            <p class="card-subtitle">Last 50 actions</p>
+        </div>
+        <span class="icon-chip-sm chip-sky"><i class="fas fa-history"></i></span>
     </div>
-    <div class="overflow-x-auto" style="max-height: 400px; overflow-y: auto;">
+    <div class="max-h-[420px] overflow-auto">
         <?php if (empty($activityLogs)): ?>
-            <div class="p-8 text-center">
-                <i class="fas fa-clipboard-list text-4xl text-gray-300 mb-3"></i>
-                <p class="text-gray-500">No activity logs yet</p>
+            <div class="p-5 sm:p-6">
+                <div class="empty-state">
+                    <div class="empty-state-icon"><i class="fas fa-clipboard-list"></i></div>
+                    <p class="empty-state-title">No activity logs yet</p>
+                </div>
             </div>
         <?php else: ?>
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50 sticky top-0">
+            <table class="table-modern">
+                <thead class="sticky top-0 z-10">
                     <tr>
-                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
-                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
-                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
-                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider hidden lg:table-cell">Module</th>
-                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Description</th>
-                        <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider hidden xl:table-cell">IP Address</th>
+                        <th class="bg-gray-50">Time</th>
+                        <th class="bg-gray-50">User</th>
+                        <th class="bg-gray-50">Action</th>
+                        <th class="hidden bg-gray-50 lg:table-cell">Module</th>
+                        <th class="hidden bg-gray-50 md:table-cell">Description</th>
+                        <th class="hidden bg-gray-50 xl:table-cell">IP Address</th>
                     </tr>
                 </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
+                <tbody>
                     <?php foreach ($activityLogs as $log): ?>
-                        <tr class="hover:bg-gray-50">
-                            <td class="px-3 py-3 text-sm text-gray-500">
+                        <tr>
+                            <td class="text-gray-500">
                                 <span title="<?php echo formatDateTime($log['created_at']); ?>" class="whitespace-nowrap">
                                     <?php echo timeAgo($log['created_at']); ?>
                                 </span>
                             </td>
-                            <td class="px-3 py-3">
-                                <div class="flex items-center">
+                            <td>
+                                <div class="flex items-center gap-2.5">
                                     <?php
                                     $roleIcon = match($log['user_role'] ?? '') {
-                                        'admin' => 'fa-user-shield text-red-500',
-                                        'hod' => 'fa-user-tie text-green-500',
-                                        'faculty' => 'fa-chalkboard-teacher text-purple-500',
-                                        'student' => 'fa-user-graduate text-blue-500',
-                                        default => 'fa-user text-gray-500'
+                                        'admin' => 'fa-user-shield text-rose-500',
+                                        'hod' => 'fa-user-tie text-emerald-500',
+                                        'faculty' => 'fa-chalkboard-teacher text-violet-500',
+                                        'student' => 'fa-user-graduate text-brand-500',
+                                        default => 'fa-user text-gray-400'
                                     };
                                     ?>
-                                    <i class="fas <?php echo $roleIcon; ?> mr-2 flex-shrink-0"></i>
+                                    <i class="fas <?php echo $roleIcon; ?> w-4 flex-shrink-0 text-center"></i>
                                     <div class="min-w-0">
-                                        <div class="text-sm font-medium text-gray-900 truncate">
+                                        <div class="truncate font-medium text-gray-900">
                                             <?php echo sanitize($log['user_name'] ?? 'System'); ?>
                                         </div>
                                         <?php if ($log['user_email']): ?>
-                                            <div class="text-xs text-gray-500 truncate hidden sm:block"><?php echo sanitize($log['user_email']); ?></div>
+                                            <div class="hidden truncate text-xs text-gray-500 sm:block"><?php echo sanitize($log['user_email']); ?></div>
                                         <?php endif; ?>
                                     </div>
                                 </div>
                             </td>
-                            <td class="px-3 py-3">
+                            <td>
                                 <?php
                                 $actionColor = match(true) {
-                                    str_contains($log['action'], 'create') || str_contains($log['action'], 'add') => 'bg-green-100 text-green-800',
-                                    str_contains($log['action'], 'delete') || str_contains($log['action'], 'remove') => 'bg-red-100 text-red-800',
-                                    str_contains($log['action'], 'update') || str_contains($log['action'], 'edit') => 'bg-blue-100 text-blue-800',
-                                    str_contains($log['action'], 'login') => 'bg-indigo-100 text-indigo-800',
-                                    str_contains($log['action'], 'approve') => 'bg-emerald-100 text-emerald-800',
-                                    str_contains($log['action'], 'reject') => 'bg-orange-100 text-orange-800',
-                                    str_contains($log['action'], 'password') => 'bg-yellow-100 text-yellow-800',
-                                    default => 'bg-gray-100 text-gray-800'
+                                    str_contains($log['action'], 'create') || str_contains($log['action'], 'add') => 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+                                    str_contains($log['action'], 'delete') || str_contains($log['action'], 'remove') => 'bg-rose-50 text-rose-700 ring-rose-200',
+                                    str_contains($log['action'], 'update') || str_contains($log['action'], 'edit') => 'bg-brand-50 text-brand-700 ring-brand-200',
+                                    str_contains($log['action'], 'login') => 'bg-sky-50 text-sky-700 ring-sky-200',
+                                    str_contains($log['action'], 'approve') => 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+                                    str_contains($log['action'], 'reject') => 'bg-orange-50 text-orange-700 ring-orange-200',
+                                    str_contains($log['action'], 'password') => 'bg-amber-50 text-amber-800 ring-amber-200',
+                                    default => 'bg-gray-100 text-gray-700 ring-gray-200'
                                 };
                                 ?>
-                                <span class="px-2 py-1 text-xs font-medium rounded-full <?php echo $actionColor; ?> whitespace-nowrap">
+                                <span class="badge <?php echo $actionColor; ?>">
                                     <?php echo sanitize(str_replace('_', ' ', ucwords($log['action']))); ?>
                                 </span>
                             </td>
-                            <td class="px-3 py-3 text-sm text-gray-600 hidden lg:table-cell">
+                            <td class="hidden text-gray-600 lg:table-cell">
                                 <span class="capitalize"><?php echo sanitize($log['module']); ?></span>
                             </td>
-                            <td class="px-3 py-3 text-sm text-gray-600 max-w-xs truncate hidden md:table-cell" title="<?php echo sanitize($log['description']); ?>">
+                            <td class="hidden max-w-xs truncate text-gray-600 md:table-cell" title="<?php echo sanitize($log['description']); ?>">
                                 <?php echo sanitize($log['description']); ?>
                             </td>
-                            <td class="px-3 py-3 text-sm text-gray-500 font-mono hidden xl:table-cell">
+                            <td class="hidden font-mono text-xs text-gray-500 xl:table-cell">
                                 <?php echo sanitize($log['ip_address'] ?? '-'); ?>
                             </td>
                         </tr>
@@ -330,6 +361,30 @@ foreach ($allLeaves as $leave) {
 
 <?php if ($totalLeaves > 0): ?>
 <script>
+// Chart styling shared by the three charts: the portal's Inter + slate ink,
+// hairline grids, brand palette (leave types match their badges).
+Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+Chart.defaults.color = '#64748b';
+Chart.defaults.plugins.legend.labels.usePointStyle = true;
+Chart.defaults.plugins.legend.labels.boxWidth = 8;
+Chart.defaults.plugins.legend.labels.boxHeight = 8;
+Chart.defaults.plugins.tooltip.backgroundColor = '#0f172a';
+Chart.defaults.plugins.tooltip.padding = 10;
+Chart.defaults.plugins.tooltip.cornerRadius = 8;
+Chart.defaults.plugins.tooltip.boxPadding = 4;
+
+const percentTooltip = {
+    callbacks: {
+        label: function(context) {
+            let label = context.label || '';
+            let value = context.parsed || 0;
+            let total = context.dataset.data.reduce((a, b) => a + b, 0);
+            let percentage = ((value / total) * 100).toFixed(1);
+            return label + ': ' + value + ' (' + percentage + '%)';
+        }
+    }
+};
+
 // Type Distribution Chart
 new Chart(document.getElementById('typeChart'), {
     type: 'doughnut',
@@ -337,7 +392,8 @@ new Chart(document.getElementById('typeChart'), {
         labels: ['Personal', 'Medical', 'Academic'],
         datasets: [{
             data: [<?php echo $personal; ?>, <?php echo $medical; ?>, <?php echo $academic; ?>],
-            backgroundColor: ['#9333EA', '#DC2626', '#2563EB'],
+            backgroundColor: ['#7c3aed', '#e11d48', '#0284c7'],
+            hoverOffset: 6,
             borderWidth: 2,
             borderColor: '#ffffff'
         }]
@@ -345,39 +401,31 @@ new Chart(document.getElementById('typeChart'), {
     options: {
         responsive: true,
         maintainAspectRatio: false,
+        cutout: '68%',
         plugins: {
             legend: {
                 position: 'bottom',
                 labels: {
-                    padding: 15,
+                    padding: 16,
                     font: {
                         size: 12
                     }
                 }
             },
-            tooltip: {
-                callbacks: {
-                    label: function(context) {
-                        let label = context.label || '';
-                        let value = context.parsed || 0;
-                        let total = context.dataset.data.reduce((a, b) => a + b, 0);
-                        let percentage = ((value / total) * 100).toFixed(1);
-                        return label + ': ' + value + ' (' + percentage + '%)';
-                    }
-                }
-            }
+            tooltip: percentTooltip
         }
     }
 });
 
 // Status Distribution Chart
 new Chart(document.getElementById('statusChart'), {
-    type: 'pie',
+    type: 'doughnut',
     data: {
         labels: ['Approved', 'Rejected', 'Pending'],
         datasets: [{
             data: [<?php echo $approvedCount; ?>, <?php echo $rejectedCount; ?>, <?php echo $pendingCount; ?>],
-            backgroundColor: ['#10B981', '#EF4444', '#F59E0B'],
+            backgroundColor: ['#059669', '#e11d48', '#d97706'],
+            hoverOffset: 6,
             borderWidth: 2,
             borderColor: '#ffffff'
         }]
@@ -385,27 +433,18 @@ new Chart(document.getElementById('statusChart'), {
     options: {
         responsive: true,
         maintainAspectRatio: false,
+        cutout: '68%',
         plugins: {
             legend: {
                 position: 'bottom',
                 labels: {
-                    padding: 15,
+                    padding: 16,
                     font: {
                         size: 12
                     }
                 }
             },
-            tooltip: {
-                callbacks: {
-                    label: function(context) {
-                        let label = context.label || '';
-                        let value = context.parsed || 0;
-                        let total = context.dataset.data.reduce((a, b) => a + b, 0);
-                        let percentage = ((value / total) * 100).toFixed(1);
-                        return label + ': ' + value + ' (' + percentage + '%)';
-                    }
-                }
-            }
+            tooltip: percentTooltip
         }
     }
 });
@@ -425,25 +464,34 @@ new Chart(document.getElementById('trendChart'), {
             {
                 label: 'Approved',
                 data: [<?php echo implode(', ', array_column($monthlyData, 'approved')); ?>],
-                borderColor: '#10B981',
-                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderColor: '#059669',
+                backgroundColor: 'rgba(5, 150, 105, 0.12)',
+                pointBackgroundColor: '#059669',
+                pointStyle: 'circle',
                 tension: 0.4,
+                cubicInterpolationMode: 'monotone',
                 fill: true
             },
             {
                 label: 'Rejected',
                 data: [<?php echo implode(', ', array_column($monthlyData, 'rejected')); ?>],
-                borderColor: '#EF4444',
-                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                borderColor: '#e11d48',
+                backgroundColor: 'rgba(225, 29, 72, 0.12)',
+                pointBackgroundColor: '#e11d48',
+                pointStyle: 'rectRot',
                 tension: 0.4,
+                cubicInterpolationMode: 'monotone',
                 fill: true
             },
             {
                 label: 'Pending',
                 data: [<?php echo implode(', ', array_column($monthlyData, 'pending')); ?>],
-                borderColor: '#F59E0B',
-                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                borderColor: '#d97706',
+                backgroundColor: 'rgba(217, 119, 6, 0.12)',
+                pointBackgroundColor: '#d97706',
+                pointStyle: 'triangle',
                 tension: 0.4,
+                cubicInterpolationMode: 'monotone',
                 fill: true
             }
         ]
@@ -455,12 +503,15 @@ new Chart(document.getElementById('trendChart'), {
             mode: 'index',
             intersect: false
         },
+        elements: {
+            line: { borderWidth: 2 },
+            point: { radius: 3, hoverRadius: 5, borderColor: '#ffffff', borderWidth: 1.5 }
+        },
         plugins: {
             legend: {
                 position: 'bottom',
                 labels: {
-                    padding: 15,
-                    usePointStyle: true
+                    padding: 16
                 }
             },
             tooltip: {
@@ -474,17 +525,21 @@ new Chart(document.getElementById('trendChart'), {
         scales: {
             y: {
                 beginAtZero: true,
+                border: { display: false },
                 ticks: {
-                    stepSize: 1
+                    stepSize: 1,
+                    precision: 0
                 },
                 grid: {
-                    color: 'rgba(0, 0, 0, 0.05)'
+                    color: '#f1f5f9'
                 }
             },
             x: {
+                border: { color: '#e2e8f0' },
                 grid: {
                     display: false
-                }
+                },
+                ticks: { maxRotation: 0 }
             }
         }
     }

@@ -8,6 +8,7 @@ require_once __DIR__ . '/config/constants.php';
 require_once __DIR__ . '/config/database.php';
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/rate_limit.php';
 require_once __DIR__ . '/classes/User.php';
 require_once __DIR__ . '/includes/EmailService.php';
 
@@ -20,57 +21,80 @@ if (isLoggedIn()) {
 $error = '';
 $success = '';
 $email = '';
+$pendingReset = null;   // account to email once the page has been delivered
 
 // Handle forgot password form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = sanitize($_POST['email'] ?? '');
 
-    // Validate input
-    if (empty($email)) {
+    // Validate input. The CSRF check comes first so that nothing is recorded
+    // for a blind cross-site POST: the per-IP limit below is shared by everyone
+    // behind one address, and must not be something any web page can exhaust.
+    if (!verifyCSRFToken((string) ($_POST['csrf_token'] ?? ''))) {
+        $error = 'The form had expired. Please try again.';
+    } elseif (empty($email)) {
         $error = 'Please enter your email address';
     } elseif (!validateEmail($email)) {
         $error = 'Please enter a valid email address';
     } elseif (!validateDomain($email)) {
         $error = 'Please use your @' . ALLOWED_DOMAIN . ' email address';
     } else {
-        try {
-            $user = new User();
+        /*
+         * One answer for every well-formed address. This page used to say "link
+         * has been sent" for a registered active account, "if an account exists"
+         * for anything else, and "failed to send" on a mail error, so it told
+         * anyone which addresses had accounts. It also mailed a fresh link on
+         * every submit, which made it an inbox-flooding tool. Now the reply never
+         * varies — registered or not, active or not, throttled or not — and the
+         * limits below decide silently whether a mail actually goes out.
+         */
+        $emailKey = authAttemptEmailKey($email);
+        $clientIp = getClientIp();
 
-            // Check if user exists and is active
+        /*
+         * Every well-formed request does the same database work whether or not
+         * the address has an account (one insert, the same counts, one update),
+         * so response time does not tell the two apart either.
+         *
+         * Per IP, insert-then-count: this request's row is written first and
+         * counted with the rest, so a parallel burst cannot all pass the check.
+         * Office egress addresses (attendance allow-list) are exempt: everyone
+         * on the office WiFi shares one.
+         */
+        $attemptId = authAttemptRecord('reset_request', $emailKey, $clientIp);
+        $ipFlooding = authAttemptCount(['reset_request', 'reset_sent'], 'ip', authLimitedIp($clientIp),
+            RESET_REQUEST_WINDOW_SECONDS) > RESET_REQUEST_MAX_PER_IP;
+
+        // Per account, the "was a mail sent recently?" check and the marking of
+        // this request as the one that sends happen under a per-address lock, so
+        // parallel submits for one address cannot each send a mail.
+        $lockKey = 'reset:' . $emailKey;
+        $locked = authLock($lockKey);
+        try {
+            $sentRecently = authAttemptCount('reset_sent', 'email', $emailKey, RESET_EMAIL_MIN_INTERVAL_SECONDS);
+            $sentToday = authAttemptCount('reset_sent', 'email', $emailKey, 86400);
+
+            $user = new User();
             $userData = $user->getByEmail($email);
 
-            if ($userData && $userData['is_active']) {
-                // Generate password reset token
-                $result = $user->generatePasswordResetToken($userData['id']);
-
-                if ($result['success']) {
-                    // Send password reset email
-                    $emailService = new EmailService();
-                    $emailSent = $emailService->sendPasswordReset(
-                        $email,
-                        $userData['name'],
-                        $result['token']
-                    );
-
-                    if ($emailSent) {
-                        $success = 'Password reset link has been sent to your email. Please check your inbox (and spam folder) for the link.';
-                        // Clear the form
-                        $email = '';
-                    } else {
-                        $error = 'Failed to send reset link. Please try again later.';
-                    }
-                } else {
-                    $error = 'An error occurred. Please try again.';
-                }
-            } else {
-                // For security, show generic message even if user doesn't exist
-                $success = 'If an account exists with this email, a password reset link will be sent to it.';
-                $email = '';
+            $send = $locked && !$ipFlooding && $sentRecently === 0 && $sentToday < RESET_EMAIL_MAX_PER_DAY
+                && $userData && (int) $userData['is_active'] === 1;
+            authAttemptSetAction($attemptId, $send ? 'reset_sent' : 'reset_request');
+            if ($send) {
+                $pendingReset = $userData;
             }
         } catch (Exception $e) {
             logError("Forgot password error: " . $e->getMessage());
-            $error = 'An error occurred. Please try again.';
+        } finally {
+            if ($locked) {
+                authUnlock($lockKey);
+            }
         }
+
+        $success = 'If an active account exists for this address, a password reset link has been sent to it. '
+                 . 'Please check your inbox (and spam folder). If nothing arrives within a few minutes, '
+                 . 'wait ' . intdiv(RESET_EMAIL_MIN_INTERVAL_SECONDS, 60) . ' minutes before asking again.';
+        $email = '';
     }
 }
 
@@ -82,101 +106,122 @@ $pageTitle = 'Forgot Password';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo $pageTitle . ' - ' . SITE_NAME; ?></title>
-    <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/vendor/tailwind/tailwind.min.css">
+    <link rel="stylesheet" href="<?php echo asset_url('public/vendor/tailwind/tailwind.min.css'); ?>">
     <link rel="stylesheet" href="<?php echo BASE_URL; ?>/public/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="<?php echo asset_url('public/css/custom.css'); ?>">
 </head>
-<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen flex items-center justify-center px-4">
+<body class="bg-gray-50 text-gray-800 antialiased">
 
-    <div class="max-w-md w-full">
-        <!-- Logo and Title -->
-        <div class="text-center mb-8">
-            <div class="inline-block p-4 bg-white rounded-full shadow-lg mb-4">
-                <i class="fas fa-graduation-cap text-4xl text-blue-600"></i>
-            </div>
-            <h1 class="text-3xl font-bold text-gray-900 mb-2"><?php echo SITE_NAME; ?></h1>
-            <p class="text-gray-600">IIT Bombay</p>
-        </div>
+<main class="relative flex min-h-screen flex-col items-center justify-center px-4 py-10 sm:px-6">
+    <div class="pointer-events-none absolute inset-x-0 top-0 h-72 bg-gradient-to-b from-blue-100/60 to-transparent" aria-hidden="true"></div>
+
+    <div class="relative w-full max-w-md">
+        <!-- Brand mark -->
+        <a href="<?php echo BASE_URL; ?>/login.php" class="mb-8 block text-center">
+            <span class="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-700 via-blue-600 to-violet-600 text-2xl text-white shadow-lg">
+                <i class="fas fa-graduation-cap"></i>
+            </span>
+            <span class="mt-4 block text-xl font-semibold tracking-tight text-gray-900"><?php echo SITE_NAME; ?></span>
+            <span class="mt-1 block text-sm text-gray-500">SJM School of Management, IIT Bombay</span>
+        </a>
 
         <!-- Forgot Password Card -->
-        <div class="bg-white rounded-lg shadow-xl p-8">
-            <h2 class="text-2xl font-semibold text-gray-900 mb-2">Reset Password</h2>
-            <p class="text-gray-600 text-sm mb-6">Enter your email address and we'll send you a link to reset your password.</p>
+        <div class="card p-6 shadow-lg sm:p-8">
+            <span class="icon-chip chip-brand"><i class="fas fa-key"></i></span>
+            <h1 class="mt-4 text-2xl font-semibold tracking-tight text-gray-900">Reset password</h1>
+            <p class="mt-1.5 text-sm text-gray-500">Enter your email address and we'll send you a link to reset your password.</p>
 
             <?php if ($error): ?>
-                <div class="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-                    <p class="text-sm text-red-800">
-                        <i class="fas fa-exclamation-circle mr-2"></i><?php echo sanitize($error); ?>
-                    </p>
+                <div class="alert alert-error mt-6" role="alert">
+                    <i class="fas fa-exclamation-circle mt-0.5"></i>
+                    <p><?php echo sanitize($error); ?></p>
                 </div>
             <?php endif; ?>
 
             <?php if ($success): ?>
-                <div class="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-                    <p class="text-sm text-green-800">
-                        <i class="fas fa-check-circle mr-2"></i><?php echo sanitize($success); ?>
-                    </p>
+                <div class="alert alert-success mt-6" role="status">
+                    <i class="fas fa-check-circle mt-0.5"></i>
+                    <p><?php echo sanitize($success); ?></p>
                 </div>
             <?php endif; ?>
 
-            <form method="POST" action="" class="space-y-6">
+            <form method="POST" action="" class="mt-6 space-y-5">
+                <?php echo getCSRFField(); ?>
                 <!-- Email Field -->
                 <div>
-                    <label for="email" class="block text-sm font-medium text-gray-700 mb-2">
-                        Email Address
-                    </label>
+                    <label for="email" class="form-label">Email address</label>
                     <div class="relative">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                            <i class="fas fa-envelope text-gray-400"></i>
-                        </div>
+                        <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
+                            <i class="fas fa-envelope"></i>
+                        </span>
                         <input
                             type="email"
                             id="email"
                             name="email"
                             value="<?php echo sanitize($email); ?>"
-                            class="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            class="form-input py-3 pl-10"
                             placeholder="your.name@iitb.ac.in"
+                            autocomplete="username"
                             required
                             autofocus
                         >
                     </div>
-                    <p class="text-xs text-gray-500 mt-2">
-                        <i class="fas fa-info-circle mr-1"></i>Use your @iitb.ac.in email address
-                    </p>
+                    <p class="form-help">Use your @iitb.ac.in email address.</p>
                 </div>
 
                 <!-- Submit Button -->
-                <button
-                    type="submit"
-                    class="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
-                >
-                    <i class="fas fa-paper-plane mr-2"></i>Send Reset Link
+                <button type="submit" class="btn btn-primary btn-lg w-full">
+                    <i class="fas fa-paper-plane"></i>Send reset link
                 </button>
             </form>
 
             <!-- Back to Login -->
-            <div class="mt-6 text-center">
-                <p class="text-sm text-gray-600">
-                    Remember your password?
-                    <a href="<?php echo BASE_URL; ?>/login.php" class="text-blue-600 hover:text-blue-500 font-medium">
-                        Sign in
-                    </a>
-                </p>
-            </div>
+            <p class="mt-6 text-center text-sm text-gray-600">
+                Remember your password?
+                <a href="<?php echo BASE_URL; ?>/login.php" class="font-semibold text-blue-600 hover:text-blue-700">Sign in</a>
+            </p>
 
             <!-- Help Text -->
-            <div class="mt-6 pt-6 border-t border-gray-200">
-                <p class="text-xs text-gray-500 text-center">
-                    <i class="fas fa-shield-alt mr-1 text-blue-600"></i>
-                    Your account security is important. The reset link will expire in <?php echo TOKEN_EXPIRY_HOURS; ?> hours.
-                </p>
+            <div class="mt-6 flex items-start gap-2.5 border-t border-gray-100 pt-6 text-xs text-gray-500">
+                <i class="fas fa-shield-alt mt-0.5 text-blue-600"></i>
+                <p>Your account security is important. The reset link will expire in <?php echo TOKEN_EXPIRY_HOURS; ?> hours.</p>
             </div>
         </div>
 
         <!-- Footer -->
-        <div class="text-center mt-8 text-sm text-gray-600">
-            <p>&copy; <?php echo date('Y'); ?> IIT Bombay. All rights reserved.</p>
-        </div>
+        <p class="mt-8 text-center text-sm text-gray-500">&copy; <?php echo date('Y'); ?> IIT Bombay. All rights reserved.</p>
     </div>
+</main>
 
 </body>
 </html>
+<?php
+/*
+ * Send the reset mail only AFTER the response is complete. Minting the token
+ * and talking to SMTP take long enough that doing it inline made a registered
+ * address answer measurably slower than an unknown one. PHP-FPM (production)
+ * can hand the page to the client first; elsewhere the mail still goes, just
+ * without that timing cover.
+ */
+if ($pendingReset !== null) {
+    session_write_close();
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    }
+    ignore_user_abort(true);
+
+    try {
+        $resetUser = new User();
+        $result = $resetUser->generatePasswordResetToken($pendingReset['id']);
+        if (!empty($result['success'])) {
+            $emailService = new EmailService();
+            if (!$emailService->sendPasswordReset($pendingReset['email'], $pendingReset['name'], $result['token'])) {
+                logError('Password reset email could not be sent', ['user_id' => (int) $pendingReset['id']]);
+            }
+        } else {
+            logError('Password reset token could not be generated', ['user_id' => (int) $pendingReset['id']]);
+        }
+    } catch (Throwable $e) {
+        logError('Forgot password error: ' . $e->getMessage(), ['user_id' => (int) $pendingReset['id']]);
+    }
+}

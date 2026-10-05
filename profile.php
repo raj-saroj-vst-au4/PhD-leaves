@@ -88,199 +88,171 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 ?>
 
-<div class="max-w-4xl mx-auto">
+<div class="max-w-5xl mx-auto">
     <!-- Page Header -->
-    <div class="mb-8">
-        <h1 class="text-3xl font-bold text-gray-900">My Profile</h1>
-        <p class="text-gray-600 mt-2">View and update your profile information</p>
+    <div class="page-header">
+        <div>
+            <p class="page-eyebrow">Account</p>
+            <h1 class="page-title">My Profile</h1>
+            <p class="page-subtitle">View and update your profile information</p>
+        </div>
     </div>
 
     <?php if ($error): ?>
-        <div class="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-            <p class="text-sm text-red-800">
-                <i class="fas fa-exclamation-circle mr-2"></i><?php echo $error; ?>
-            </p>
+        <div class="alert alert-error mb-6" role="alert">
+            <i class="fas fa-exclamation-circle mt-0.5"></i>
+            <p><?php echo sanitize($error); ?></p>
         </div>
     <?php endif; ?>
 
     <?php if ($success): ?>
-        <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-            <p class="text-sm text-green-800">
-                <i class="fas fa-check-circle mr-2"></i><?php echo $success; ?>
-            </p>
+        <div class="alert alert-success mb-6" role="status">
+            <i class="fas fa-check-circle mt-0.5"></i>
+            <p><?php echo sanitize($success); ?></p>
         </div>
     <?php endif; ?>
 
+    <?php
+    $profileInitials = '';
+    foreach (array_slice(preg_split('/\s+/', trim(html_entity_decode((string) $user['name'], ENT_QUOTES, 'UTF-8'))), 0, 2) as $part) {
+        $profileInitials .= mb_strtoupper(mb_substr($part, 0, 1));
+    }
+    ?>
+
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Profile Card -->
-        <div class="lg:col-span-1">
-            <div class="bg-white rounded-lg shadow-md p-6 text-center">
-                <div class="w-24 h-24 bg-blue-100 rounded-full mx-auto flex items-center justify-center mb-4">
-                    <i class="fas fa-user text-blue-600 text-4xl"></i>
+        <div class="lg:col-span-1 space-y-6">
+            <div class="card overflow-hidden text-center">
+                <div class="h-20 bg-gradient-to-br from-blue-600 to-violet-600"></div>
+                <div class="-mt-10 px-6 pb-6">
+                    <span class="avatar h-20 w-20 text-2xl ring-4 ring-white"><?php echo sanitize($profileInitials ?: '?'); ?></span>
+                    <h2 class="mt-3 text-lg font-semibold text-gray-900"><?php echo sanitize($user['name']); ?></h2>
+                    <p class="mt-0.5 text-sm text-gray-500 break-all"><?php echo sanitize($user['email']); ?></p>
+                    <div class="mt-3 flex flex-wrap items-center justify-center gap-2">
+                        <span class="badge badge-brand"><?php echo sanitize(ucfirst($userRole)); ?></span>
+                        <?php if ($roleDetails && isset($roleDetails['roll_number'])): ?>
+                            <span class="badge badge-neutral">
+                                <i class="fas fa-id-card"></i><?php echo sanitize($roleDetails['roll_number']); ?>
+                            </span>
+                        <?php endif; ?>
+                    </div>
                 </div>
-                <h2 class="text-xl font-semibold text-gray-900"><?php echo sanitize($user['name']); ?></h2>
-                <p class="text-gray-600 mt-1"><?php echo sanitize($user['email']); ?></p>
-                <span class="inline-block mt-3 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">
-                    <?php echo ucfirst($userRole); ?>
-                </span>
-
-                <?php if ($roleDetails && isset($roleDetails['roll_number'])): ?>
-                    <p class="text-gray-500 text-sm mt-3">
-                        <i class="fas fa-id-card mr-1"></i>
-                        <?php echo sanitize($roleDetails['roll_number']); ?>
-                    </p>
-                <?php endif; ?>
-
-                <div class="mt-4 pt-4 border-t border-gray-200">
-                    <p class="text-xs text-gray-500">
-                        Member since <?php echo date('M Y', strtotime($user['created_at'])); ?>
-                    </p>
+                <div class="card-footer text-xs text-gray-500">
+                    Member since <?php echo date('M Y', strtotime($user['created_at'])); ?>
                 </div>
             </div>
 
             <!-- Quick Links -->
-            <div class="bg-white rounded-lg shadow-md p-6 mt-6">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4">Quick Links</h3>
-                <ul class="space-y-2">
-                    <li>
-                        <a href="<?php echo BASE_URL; ?>/change-password.php" class="flex items-center text-gray-700 hover:text-blue-600">
-                            <i class="fas fa-key mr-3 text-gray-400"></i>
-                            Change Password
-                        </a>
-                    </li>
-                    <?php if ($userRole === 'student'): ?>
-                        <li>
-                            <a href="<?php echo BASE_URL; ?>/student/dashboard.php" class="flex items-center text-gray-700 hover:text-blue-600">
-                                <i class="fas fa-home mr-3 text-gray-400"></i>
-                                Dashboard
-                            </a>
-                        </li>
-                        <li>
-                            <a href="<?php echo BASE_URL; ?>/student/leave_history.php" class="flex items-center text-gray-700 hover:text-blue-600">
-                                <i class="fas fa-history mr-3 text-gray-400"></i>
-                                Leave History
-                            </a>
-                        </li>
-                    <?php endif; ?>
-                </ul>
+            <div class="card p-2">
+                <p class="px-3 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider text-gray-400">Quick links</p>
+                <a href="<?php echo BASE_URL; ?>/change-password.php" class="menu-item">
+                    <span class="icon-chip-sm chip-slate"><i class="fas fa-key"></i></span>
+                    <span class="flex-1">Change Password</span>
+                    <i class="fas fa-chevron-right text-xs text-gray-300"></i>
+                </a>
+                <?php if ($userRole === 'student'): ?>
+                    <a href="<?php echo BASE_URL; ?>/student/dashboard.php" class="menu-item">
+                        <span class="icon-chip-sm chip-brand"><i class="fas fa-home"></i></span>
+                        <span class="flex-1">Dashboard</span>
+                        <i class="fas fa-chevron-right text-xs text-gray-300"></i>
+                    </a>
+                    <a href="<?php echo BASE_URL; ?>/student/leave_history.php" class="menu-item">
+                        <span class="icon-chip-sm chip-violet"><i class="fas fa-history"></i></span>
+                        <span class="flex-1">Leave History</span>
+                        <i class="fas fa-chevron-right text-xs text-gray-300"></i>
+                    </a>
+                <?php endif; ?>
             </div>
         </div>
 
         <!-- Profile Form -->
         <div class="lg:col-span-2">
-            <div class="bg-white rounded-lg shadow-md">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <h3 class="text-lg font-semibold text-gray-900">Profile Information</h3>
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <h3 class="card-title">Profile Information</h3>
+                        <p class="card-subtitle">Your name and phone number are shown to approvers.</p>
+                    </div>
                 </div>
-                <form method="POST" class="p-6 space-y-6">
+                <form method="POST" class="card-body space-y-5">
                     <?php echo getCSRFField(); ?>
 
                     <!-- Name -->
                     <div>
-                        <label for="name" class="block text-sm font-medium text-gray-700 mb-2">
-                            Full Name <span class="text-red-500">*</span>
+                        <label for="name" class="form-label">
+                            Full Name <span class="text-rose-500">*</span>
                         </label>
                         <input
                             type="text"
                             id="name"
                             name="name"
                             value="<?php echo sanitize($user['name']); ?>"
-                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            class="form-input"
                             required
                         >
                     </div>
 
-                    <!-- Email (Read-only) -->
-                    <div>
-                        <label for="email" class="block text-sm font-medium text-gray-700 mb-2">
-                            Email Address
-                        </label>
-                        <input
-                            type="email"
-                            id="email"
-                            value="<?php echo sanitize($user['email']); ?>"
-                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
-                            disabled
-                        >
-                        <p class="mt-1 text-xs text-gray-500">Email cannot be changed</p>
-                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <!-- Email (Read-only) -->
+                        <div>
+                            <label for="email" class="form-label">
+                                Email Address
+                            </label>
+                            <input
+                                type="email"
+                                id="email"
+                                value="<?php echo sanitize($user['email']); ?>"
+                                class="form-input"
+                                disabled
+                            >
+                            <p class="form-help">Email cannot be changed</p>
+                        </div>
 
-                    <!-- Phone -->
-                    <div>
-                        <label for="phone" class="block text-sm font-medium text-gray-700 mb-2">
-                            Phone Number
-                        </label>
-                        <input
-                            type="tel"
-                            id="phone"
-                            name="phone"
-                            value="<?php echo sanitize($user['phone'] ?? ''); ?>"
-                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="Enter your phone number"
-                        >
-                    </div>
-
-                    <!-- Role (Read-only) -->
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-2">
-                            Role
-                        </label>
-                        <input
-                            type="text"
-                            value="<?php echo ucfirst($userRole); ?>"
-                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
-                            disabled
-                        >
+                        <!-- Phone -->
+                        <div>
+                            <label for="phone" class="form-label">
+                                Phone Number
+                            </label>
+                            <input
+                                type="tel"
+                                id="phone"
+                                name="phone"
+                                value="<?php echo sanitize($user['phone'] ?? ''); ?>"
+                                class="form-input"
+                                placeholder="Enter your phone number"
+                            >
+                        </div>
                     </div>
 
                     <?php if ($roleDetails): ?>
                         <!-- Student-specific Information -->
                         <?php if ($userRole === 'student'): ?>
-                            <div class="pt-4 border-t border-gray-200">
-                                <h4 class="text-md font-semibold text-gray-900 mb-4">Academic Information</h4>
+                            <div class="pt-5 border-t border-gray-100">
+                                <h4 class="text-sm font-semibold text-gray-900">Academic Information</h4>
+                                <p class="mt-0.5 mb-4 text-sm text-gray-500">Maintained by the PhD office.</p>
 
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-2">Roll Number</label>
-                                        <input
-                                            type="text"
-                                            value="<?php echo sanitize($roleDetails['roll_number'] ?? 'N/A'); ?>"
-                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
-                                            disabled
-                                        >
+                                <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div class="rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-inset ring-gray-100">
+                                        <dt class="text-xs font-medium text-gray-500">Roll Number</dt>
+                                        <dd class="mt-0.5 text-sm font-semibold text-gray-900"><?php echo sanitize($roleDetails['roll_number'] ?? 'N/A'); ?></dd>
                                     </div>
-                                    <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-2">Joining Date</label>
-                                        <input
-                                            type="text"
-                                            value="<?php echo $roleDetails['joining_date'] ? date('d M Y', strtotime($roleDetails['joining_date'])) : 'N/A'; ?>"
-                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
-                                            disabled
-                                        >
+                                    <div class="rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-inset ring-gray-100">
+                                        <dt class="text-xs font-medium text-gray-500">Joining Date</dt>
+                                        <dd class="mt-0.5 text-sm font-semibold text-gray-900"><?php echo $roleDetails['joining_date'] ? date('d M Y', strtotime($roleDetails['joining_date'])) : 'N/A'; ?></dd>
                                     </div>
-                                    <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-2">Faculty Guide</label>
-                                        <input
-                                            type="text"
-                                            value="<?php echo sanitize($roleDetails['guide_name'] ?? 'Not assigned'); ?>"
-                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
-                                            disabled
-                                        >
+                                    <div class="rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-inset ring-gray-100">
+                                        <dt class="text-xs font-medium text-gray-500">Faculty Guide</dt>
+                                        <dd class="mt-0.5 text-sm font-semibold <?php echo empty($roleDetails['guide_name']) ? 'text-gray-400' : 'text-gray-900'; ?>"><?php echo sanitize($roleDetails['guide_name'] ?? 'Not assigned'); ?></dd>
                                     </div>
-                                    <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-2">TA Coordinator</label>
-                                        <input
-                                            type="text"
-                                            value="<?php echo sanitize($roleDetails['ta_coordinator_name'] ?? 'Not assigned'); ?>"
-                                            class="block w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50"
-                                            disabled
-                                        >
+                                    <div class="rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-inset ring-gray-100">
+                                        <dt class="text-xs font-medium text-gray-500">TA Coordinator</dt>
+                                        <dd class="mt-0.5 text-sm font-semibold <?php echo empty($roleDetails['ta_coordinator_name']) ? 'text-gray-400' : 'text-gray-900'; ?>"><?php echo sanitize($roleDetails['ta_coordinator_name'] ?? 'Not assigned'); ?></dd>
                                     </div>
-                                </div>
+                                </dl>
 
-                                <div class="mt-4 p-4 bg-blue-50 border-l-4 border-blue-400 rounded">
-                                    <p class="text-sm text-blue-900">
-                                        <i class="fas fa-info-circle mr-1"></i>
+                                <div class="alert alert-info mt-4">
+                                    <i class="fas fa-info-circle mt-0.5"></i>
+                                    <p>
                                         Your Faculty Guide and TA Coordinator decide who approves your
                                         leave, so they are set by the office rather than edited here.
                                         If either is wrong, you can request a correction when you
@@ -293,12 +265,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <?php endif; ?>
 
                     <!-- Submit Button -->
-                    <div class="flex justify-end pt-4">
-                        <button
-                            type="submit"
-                            class="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors"
-                        >
-                            <i class="fas fa-save mr-2"></i>Save Changes
+                    <div class="flex justify-end pt-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i>Save Changes
                         </button>
                     </div>
                 </form>

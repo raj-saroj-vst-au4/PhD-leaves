@@ -96,6 +96,31 @@ shell history. The proxy is only needed at build time (to fetch apt packages,
 Python wheels and the face model); at runtime the container talks solely to
 127.0.0.1.
 
+## September 2026 audit fixes — rollout order
+
+1. **Migration first:** `database/migrations/2026_09_23_attendance_backend.sql`,
+   with the same account that applied `2026_07_27_attendance.sql` (it needs
+   ALTER on `att_records`, `att_month_approvals`, `att_challenges`). Idempotent.
+   It turns the student FKs of `att_records`/`att_month_approvals` into
+   `ON DELETE RESTRICT`, adds `att_challenges.issued_at`, and creates
+   `att_frame_hashes` (the replay check; hashes only). If the backend uses
+   the `attendance_app` user, re-apply `ops/grants.sql` for its new grants.
+2. **Backend and the student JS together** (rebuild the image as below, then
+   copy `public/js/attendance.js` + `public/js/faceguide.js`). The challenge is
+   now 3–4 random steps including "turn to the OTHER side", and the server
+   checks each step in its own two frames; an old cached page would guess the
+   side and use a 1-second timed fallback, so it fails more often. The new
+   page also fetches the challenge only after the camera and face tracker are
+   ready, and resends the same frames on `SERVER_BUSY`. The asset URLs are
+   mtime-busted, so a normal copy is enough.
+3. The first nightly purge after deploy revokes and erases the templates of
+   already-deactivated students and erases every previously revoked template
+   (`templates.purged` in the audit log shows the counts). No crontab change:
+   it runs inside `/api/jobs/purge-frames`.
+
+New optional `.env` knobs (defaults shown): `FACE_WORKERS=2`,
+`FACE_QUEUE_TIMEOUT=30`, `MAX_BODY_BYTES=12582912`.
+
 ## Recommended hardening (needs MySQL root — not available to r4id)
 
 The backend currently uses the portal's DB user because creating a dedicated one

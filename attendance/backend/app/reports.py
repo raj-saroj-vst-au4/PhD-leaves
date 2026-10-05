@@ -4,18 +4,21 @@ immutably (files + SHA-256), and emailed to the office on the 1st.
 Present  = self-marked (face verified) or office 'manual' (reason on file)
 Excused  = office 'excused' OR a day covered by an approved leave application
            in the existing leave system — approved leave never costs a stipend
-Absent   = a working day with none of the above
+Absent   = a working day with none of the above, on which the student was on
+           the roll (joined, and not yet deactivated)
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 import shutil
 import smtplib
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -24,24 +27,123 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from .config import get_settings
 from .db import execute, get_setting, query_all, query_one
-from .timewindow import approved_leave_dates, today_ist, working_days_in_month
+from .marking import REAL_FAILURE_SQL
+from .timewindow import IST, approved_leave_dates, today_ist, working_days_in_month
+
+log = logging.getLogger(__name__)
 
 MONTHS = ["", "January", "February", "March", "April", "May", "June",
           "July", "August", "September", "October", "November", "December"]
 
+# How the portal's audit entries name the account whose roll status changed:
+#   old:  "Student '<name>' (ID: 42) deactivated. Reason: ..."
+#   now:  "Student '<name>' <email> (user #42) deactivated. Reason: ..."
+#         "Student '<name>' <email> (user #42) reactivated"
+#         "User '<name>' <email> (student, user #42) deactivated"
+# The name is the student's own text and may itself contain something that
+# looks like "(user #7) deactivated", so the LAST match is taken — everything
+# after the real token is the admin's reason or nothing — and in the newer
+# formats the email right before it must be that account's own.
+_ROLL_EVENT = re.compile(
+    r"(?:<([^<>\s]*)> \((?:[a-z]+, )?user #|\(ID: )(\d+)\) (deactivated|reactivated)\b"
+)
+_ROLL_ACTIONS = {"student_deactivated": "deactivated", "user_deactivated": "deactivated",
+                 "student_reactivated": "reactivated"}
+
+
+def _ist_date(value) -> date | None:
+    """A DB timestamp read on this backend's UTC session, as an IST date."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc).astimezone(IST).date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _roll_events(emails: dict[int, str]) -> dict[int, list[tuple[date, str]]]:
+    """Deactivations and reactivations per user id, oldest first, as IST dates.
+
+    `users` keeps no deactivated_at column; the portal's system_logs entries
+    are the record. Best-effort: a DB user without SELECT on system_logs gets
+    no events, and the caller falls back to users.updated_at.
+    """
+    try:
+        rows = query_all(
+            "SELECT action, description, created_at FROM system_logs "
+            "WHERE action IN ('student_deactivated','user_deactivated','student_reactivated') "
+            "ORDER BY id"
+        )
+    except Exception:
+        log.warning("system_logs unreadable; using users.updated_at as the deactivation date")
+        return {}
+    events: dict[int, list[tuple[date, str]]] = {}
+    for row in rows:
+        matches = list(_ROLL_EVENT.finditer(row["description"] or ""))
+        if not matches:
+            continue
+        m = matches[-1]
+        email, uid, kind = m.group(1), int(m.group(2)), m.group(3)
+        if kind != _ROLL_ACTIONS.get(row["action"]) or uid not in emails:
+            continue
+        if email is not None and email.lower() != (emails[uid] or "").lower():
+            continue
+        when = _ist_date(row["created_at"])
+        if when:
+            events.setdefault(uid, []).append((when, kind))
+    return events
+
+
+def _off_roll_spans(events: list[tuple[date, str]], is_active: bool,
+                    updated_on: date | None) -> list[tuple[date, date | None]]:
+    """Inclusive date spans the student was off the roll: from the day of a
+    deactivation to the day of the matching reactivation (None = still off).
+
+    The deactivation day itself is off — the office deactivates people who
+    have left — and so is the reactivation day, since it may come after that
+    morning's window. A day with an actual mark counts regardless.
+    """
+    spans: list[tuple[date, date | None]] = []
+    start = None
+    last_event = None
+    for when, kind in events:
+        last_event = when
+        if kind == "deactivated" and start is None:
+            start = when
+        elif kind == "reactivated" and start is not None:
+            spans.append((start, when))
+            start = None
+    if not is_active and start is None:
+        # Inactive with no deactivation on record (or one the logs missed):
+        # the deactivating UPDATE bumped users.updated_at.
+        known = [d for d in (updated_on, last_event) if d]
+        start = max(known) if known else None
+    if is_active and start is not None:
+        # Logged as deactivated but active now: reactivated some other way;
+        # updated_at is the best guess at when.
+        spans.append((start, updated_on if updated_on and updated_on >= start else start))
+        start = None
+    if start is not None:
+        spans.append((start, None))
+    return spans
+
 
 def compute_month(year: int, month: int) -> dict:
-    """Everything the report needs, also served raw to the dashboard preview."""
+    """Everything the report needs, also served raw to the dashboard preview.
+
+    The roster is every student ON THE ROLL at any point in the month, not just
+    today's active accounts: a student deactivated on the 20th still attended
+    the 1st-19th, and dropping them made their stipend days vanish from the
+    report. Each student is accountable only from their joining_date and while
+    not deactivated; other days are 'N' (not on roll) and count as neither
+    absent nor working days for them — a mid-month joiner used to be marked
+    absent for every day before they arrived.
+    """
     days = working_days_in_month(year, month)
     day_set = set(days)
     first = date(year, month, 1)
     last = date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)
+    today = today_ist()
 
-    students = query_all(
-        "SELECT s.id, s.roll_number, u.name, u.email FROM students s "
-        "JOIN users u ON u.id=s.user_id WHERE u.is_active=1 AND u.role='student' "
-        "ORDER BY s.roll_number"
-    )
     records = query_all(
         "SELECT * FROM att_records_current WHERE date_ist BETWEEN %s AND %s", (first, last)
     )
@@ -49,9 +151,34 @@ def compute_month(year: int, month: int) -> dict:
     for r in records:
         by_student.setdefault(r["student_id"], {})[r["date_ist"]] = r
 
+    candidates = query_all(
+        "SELECT s.id, s.roll_number, s.joining_date, u.id AS user_id, u.name, u.email, "
+        "u.is_active, u.updated_at FROM students s "
+        "JOIN users u ON u.id=s.user_id WHERE u.role='student' AND s.joining_date<=%s "
+        "ORDER BY s.roll_number",
+        (last,),
+    )
+    events = _roll_events({s["user_id"]: s["email"] for s in candidates})
+
+    students = []
+    for s in candidates:
+        spans = _off_roll_spans(events.get(s["user_id"], []), s["is_active"] == 1,
+                                _ist_date(s["updated_at"]))
+        joined = s["joining_date"]
+
+        def on_roll(d, joined=joined, spans=spans):
+            return ((joined is None or d >= joined)
+                    and not any(a <= d and (b is None or d <= b) for a, b in spans))
+
+        # Off the roll for the whole month, and nothing recorded in it: not ours.
+        if not any(on_roll(d) for d in days) and s["id"] not in by_student:
+            continue
+        in_month = [(a, b) for a, b in spans if a <= last and (b is None or b >= first)]
+        students.append({**s, "on_roll": on_roll, "spans": in_month})
+
     attempts = query_all(
-        "SELECT student_id, COUNT(*) AS n FROM att_attempts "
-        "WHERE date_ist BETWEEN %s AND %s AND verdict='fail' GROUP BY student_id",
+        "SELECT a.student_id, COUNT(*) AS n FROM att_attempts a "
+        f"WHERE a.date_ist BETWEEN %s AND %s AND {REAL_FAILURE_SQL} GROUP BY a.student_id",
         (first, last),
     )
     failed_by_student = {a["student_id"]: int(a["n"]) for a in attempts}
@@ -60,24 +187,29 @@ def compute_month(year: int, month: int) -> dict:
     for s in students:
         recs = by_student.get(s["id"], {})
         leave_days = approved_leave_dates(s["id"], first, last) & day_set
+        joined = s["joining_date"]
 
-        present, manual, excused, absent = [], [], [], []
+        present, manual, excused, absent, on_roll = [], [], [], [], []
         per_day: dict[str, str] = {}
         for d in days:
             rec = recs.get(d)
             kind = rec["kind"] if rec and rec["kind"] != "void" else None
+            if not s["on_roll"](d) and kind is None:
+                per_day[d.isoformat()] = "N"   # not on the roll that day
+                continue
+            on_roll.append(d)
             if kind == "self":
                 present.append(d); per_day[d.isoformat()] = "P"
             elif kind == "manual":
                 present.append(d); manual.append(d); per_day[d.isoformat()] = "M"
             elif kind == "excused" or d in leave_days:
                 excused.append(d); per_day[d.isoformat()] = "E"
-            elif d <= today_ist():
+            elif d <= today:
                 absent.append(d); per_day[d.isoformat()] = "A"
             else:
                 per_day[d.isoformat()] = "-"   # future
 
-        accountable = [d for d in days if d <= today_ist()]
+        accountable = [d for d in on_roll if d <= today]
         denominator = len([d for d in accountable if d not in excused])
         pct = round(100.0 * len(present) / denominator, 2) if denominator else None
 
@@ -86,13 +218,21 @@ def compute_month(year: int, month: int) -> dict:
             "roll": s["roll_number"],
             "name": s["name"],
             "email": s["email"],
-            "working_days": len(days),
+            # This student's own working days: the month's, less any before they
+            # joined or after they left. Present + excused + absent (+ future)
+            # add up to it; the sign-off snapshots it as the student's figure.
+            "working_days": len(on_roll),
             "present": len(present),
             "manual": len(manual),
             "excused": len(excused),
             "absent": len(absent),
             "percentage": pct,
             "failed_attempts": failed_by_student.get(s["id"], 0),
+            "active": s["is_active"] == 1,
+            "joining_date": joined.isoformat() if joined else None,
+            "deactivated_on": s["spans"][-1][0].isoformat() if s["spans"] else None,
+            "reactivated_on": (s["spans"][-1][1].isoformat()
+                               if s["spans"] and s["spans"][-1][1] else None),
             "per_day": per_day,
         })
 
@@ -148,6 +288,19 @@ def generate_monthly(year: int, month: int, *, trigger: str = "scheduled",
     }
 
 
+def _roll_note(row: dict, data: dict) -> str:
+    """Why a student's Working Days is short of the month's, if it is."""
+    notes = []
+    month = f"{data['year']}-{data['month']:02d}"
+    if row.get("joining_date") and row["joining_date"][:7] == month:
+        notes.append(f"joined {row['joining_date']}")
+    if row.get("deactivated_on"):
+        notes.append(f"deactivated {row['deactivated_on']}")
+    if row.get("reactivated_on"):
+        notes.append(f"reactivated {row['reactivated_on']}")
+    return "; ".join(notes)
+
+
 def _write_xlsx(data: dict, path: Path) -> None:
     wb = Workbook()
 
@@ -162,7 +315,7 @@ def _write_xlsx(data: dict, path: Path) -> None:
     ws["A1"].font = Font(bold=True, size=13)
     ws.append([])
     header = ["Roll No", "Name", "Working Days", "Present", "of which Manual",
-              "Excused (leave)", "Absent", "Attendance %", "Failed Attempts"]
+              "Excused (leave)", "Absent", "Attendance %", "Failed Attempts", "On roll"]
     ws.append(header)
     for cell in ws[3]:
         cell.font, cell.fill, cell.alignment = head_font, head_fill, centre
@@ -173,8 +326,9 @@ def _write_xlsx(data: dict, path: Path) -> None:
             row["excused"], row["absent"],
             row["percentage"] if row["percentage"] is not None else "n/a",
             row["failed_attempts"],
+            _roll_note(row, data),
         ])
-    widths = [16, 30, 14, 10, 16, 15, 10, 14, 16]
+    widths = [16, 30, 14, 10, 16, 15, 10, 14, 16, 30]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + i)].width = w
 
@@ -195,6 +349,7 @@ def _write_xlsx(data: dict, path: Path) -> None:
         ["M", "Present — marked manually by the office (reason on record)"],
         ["E", "Excused — approved leave (leave system) or office-excused"],
         ["A", "Absent"],
+        ["N", "Not on the roll that day (before joining, or after the account was deactivated)"],
         ["-", "Future date at generation time"],
         [],
         ["This report is generated from an append-only record.",

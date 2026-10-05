@@ -4,20 +4,24 @@
  * Handle final approval for extended leaves (>15 days) requiring Dean AP approval
  */
 
-$pageTitle = 'Pending Admin Approvals';
-require_once __DIR__ . '/../includes/header.php';
-requireRole('admin');
-
+require_once __DIR__ . '/../config/constants.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../classes/Approval.php';
+
+requireRole('admin');
 
 $leaveClass = new Leave();
 $approvalClass = new Approval();
 
-// Handle document upload
+// Handle document upload. Before header.php, so the redirect can still be sent.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'upload_document') {
     checkCSRF();
+    blockIfImpersonating();
 
+    $storedName = null;
     try {
         $leaveId = (int)($_POST['leave_id'] ?? 0);
 
@@ -29,274 +33,295 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             throw new Exception('Please select a document to upload');
         }
 
-        // Upload file
-        $filename = uploadFile($_FILES['dean_document']);
+        // Saved under a random name whose .pdf extension comes from the checked
+        // content, in a private directory. This used to keep the client's own
+        // extension under public/uploads/, where production nginx runs any .php.
+        $storedName = uploadFile($_FILES['dean_document'], ALLOWED_UPLOAD_TYPES, MAX_UPLOAD_SIZE, DEAN_AP_DOCS_DIR);
 
-        // Update leave application with document path
-        $db = Database::getInstance()->getConnection();
-        $sql = "UPDATE leave_applications SET dean_ap_document = :document WHERE id = :leave_id";
-        $stmt = $db->prepare($sql);
-        $stmt->execute([
-            ':document' => $filename,
-            ':leave_id' => $leaveId
-        ]);
+        // Attached under the leave's row lock, and only while it is still
+        // waiting for the admin.
+        $previous = $approvalClass->attachDeanAPDocument($leaveId, getCurrentUserId(), $storedName);
+        $storedName = null;
+        if ($previous) {
+            deletePrivateFile(DEAN_AP_DOCS_DIR, $previous);
+        }
 
         setFlashMessage('success', 'Dean AP document uploaded successfully');
-        header('Location: ' . BASE_URL . '/admin/pending_approvals.php');
-        exit();
 
     } catch (Exception $e) {
+        // Don't leave a saved file behind that no application points at.
+        if ($storedName !== null) {
+            deletePrivateFile(DEAN_AP_DOCS_DIR, $storedName);
+        }
         setFlashMessage('error', $e->getMessage());
     }
+
+    header('Location: ' . BASE_URL . '/admin/pending_approvals.php');
+    exit();
 }
+
+$pageTitle = 'Pending Admin Approvals';
+require_once __DIR__ . '/../includes/header.php';
 
 // Get pending leaves that need admin approval
 $pendingLeaves = $leaveClass->getPendingForAdmin();
+
+/** Documents are served only through the access-checked download endpoint. */
+function adminDocumentUrl($leaveId, $doc) {
+    return BASE_URL . '/api/files/download.php?leave_id=' . (int) $leaveId . '&doc=' . urlencode($doc);
+}
 ?>
 
-<div class="mb-6">
-    <h1 class="text-3xl font-bold text-gray-900">Pending Admin Approvals</h1>
-    <p class="text-gray-600 mt-2">Extended leaves requiring Dean AP approval</p>
+<div class="page-header">
+    <div>
+        <p class="page-eyebrow">Admin</p>
+        <h1 class="page-title">Pending Admin Approvals</h1>
+        <p class="page-subtitle">Extended leaves requiring Dean AP approval</p>
+    </div>
+    <?php if (count($pendingLeaves) > 0): ?>
+        <span class="badge badge-pending self-start px-3 py-1 text-sm sm:self-auto" title="Applications Pending Admin Approval">
+            <i class="fas fa-clipboard-check"></i><?php echo count($pendingLeaves); ?> Pending
+        </span>
+    <?php endif; ?>
 </div>
 
 <?php displayFlashMessage(); ?>
 
 <!-- Info Box -->
-<div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-    <div class="flex items-start">
-        <i class="fas fa-info-circle text-blue-600 text-xl mr-3 mt-0.5"></i>
-        <div>
-            <p class="text-sm text-blue-800 font-medium mb-1">About Admin Approvals</p>
-            <p class="text-sm text-blue-700">
-                Extended academic leaves (>15 days) require Dean AP approval document.
-                Upload the signed Dean AP approval document before approving the leave application.
-            </p>
-        </div>
+<div class="alert alert-info mb-6">
+    <i class="fas fa-info-circle mt-0.5"></i>
+    <div>
+        <p class="font-semibold">About Admin Approvals</p>
+        <p class="mt-0.5">
+            Extended academic leaves (>15 days) require Dean AP approval document.
+            Upload the signed Dean AP approval document before approving the leave application.
+        </p>
     </div>
 </div>
 
-<!-- Pending Count -->
-<?php if (count($pendingLeaves) > 0): ?>
-    <div class="bg-white rounded-lg shadow-md p-4 mb-6">
-        <div class="flex items-center justify-between">
-            <div>
-                <p class="text-sm text-gray-600">Applications Pending Admin Approval</p>
-                <p class="text-3xl font-bold text-orange-600"><?php echo count($pendingLeaves); ?></p>
-            </div>
-            <i class="fas fa-clipboard-check text-6xl text-orange-100"></i>
-        </div>
-    </div>
-<?php endif; ?>
-
 <!-- Pending Applications -->
 <?php if (empty($pendingLeaves)): ?>
-    <div class="bg-white rounded-lg shadow-md p-12 text-center">
-        <i class="fas fa-check-circle text-6xl text-green-500 mb-4"></i>
-        <h3 class="text-xl font-semibold text-gray-900 mb-2">All Clear!</h3>
-        <p class="text-gray-600">No applications pending admin approval</p>
+    <div class="card">
+        <div class="px-6 py-14 text-center">
+            <div class="empty-state-icon h-14 w-14 bg-emerald-50 text-2xl text-emerald-600 ring-emerald-100">
+                <i class="fas fa-check"></i>
+            </div>
+            <h3 class="text-base font-semibold text-gray-900">All clear!</h3>
+            <p class="empty-state-description">No applications pending admin approval</p>
+        </div>
     </div>
 <?php else: ?>
-    <div class="space-y-6">
+    <?php
+    // Timeline marker classes and icon per approval-chain status (presentation only).
+    $timelineMarker = [
+        'approved' => ['bg-emerald-50 text-emerald-600 ring-emerald-200', 'fa-check'],
+        'rejected' => ['bg-rose-50 text-rose-600 ring-rose-200', 'fa-times'],
+        'pending'  => ['bg-amber-50 text-amber-600 ring-amber-200', 'fa-clock'],
+    ];
+    ?>
+    <div class="space-y-5">
         <?php foreach ($pendingLeaves as $leave): ?>
             <?php
-            $approvalChain = $approvalClass->getApprovalChain($leave['id']);
+            // getApprovalChain() returns an envelope; the stages are under
+            // 'approval_chain'. Looping over the envelope itself hit a string
+            // ('current_status') and threw a TypeError on the first long leave.
+            $chainResult = $approvalClass->getApprovalChain($leave['id']);
+            $approvalChain = $chainResult['approval_chain'] ?? [];
             $isExtended = $leave['total_days'] > EXTENDED_LEAVE_THRESHOLD;
-            $hasDocument = !empty($leave['dean_ap_document']);
+            // The Dean AP document lives in admin_document_path (there is no
+            // dean_ap_document column), and must actually be on disk.
+            $hasDocument = privateFilePath(DEAN_AP_DOCS_DIR, $leave['admin_document_path'] ?? null) !== null;
             ?>
-            <div class="bg-white rounded-lg shadow-md overflow-hidden">
-                <!-- Header -->
-                <div class="bg-gradient-to-r from-orange-500 to-red-500 text-white px-6 py-4">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <h3 class="text-xl font-bold">Leave Application #<?php echo $leave['id']; ?></h3>
-                            <p class="text-sm opacity-90 mt-1">
-                                Submitted <?php echo timeAgo($leave['created_at']); ?>
-                            </p>
+            <div class="card overflow-hidden">
+                <div class="h-1 bg-amber-400" aria-hidden="true"></div>
+
+                <div class="card-body">
+                    <!-- Top row: application, student, leave type, status -->
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div class="flex min-w-0 items-start gap-3">
+                            <span class="icon-chip chip-amber"><i class="fas fa-user-graduate"></i></span>
+                            <div class="min-w-0">
+                                <p class="text-xs font-medium text-gray-500">Leave Application #<?php echo $leave['id']; ?></p>
+                                <h3 class="text-base font-semibold text-gray-900 sm:text-lg"><?php echo sanitize($leave['student_name']); ?></h3>
+                                <p class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-sm text-gray-500">
+                                    <span class="font-medium text-gray-700"><?php echo sanitize($leave['roll_number']); ?></span>
+                                    <span class="hidden text-gray-300 sm:inline" aria-hidden="true">&middot;</span>
+                                    <span class="min-w-0 max-w-full truncate"><?php echo sanitize($leave['student_email']); ?></span>
+                                </p>
+                            </div>
                         </div>
-                        <div class="text-right">
-                            <span class="px-3 py-1 bg-white bg-opacity-20 rounded-full text-sm font-semibold">
-                                <?php echo $leave['total_days']; ?> Days
-                            </span>
+                        <div class="flex flex-shrink-0 flex-wrap items-center gap-2 pl-14 sm:justify-end sm:pl-0">
+                            <?php echo getLeaveTypeBadge($leave['leave_type']); ?>
+                            <?php echo getStatusBadge($leave['status']); ?>
+                        </div>
+                    </div>
+
+                    <!-- Meta: dates, duration, submitted -->
+                    <div class="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-gray-600">
+                        <span class="inline-flex items-center gap-1.5">
+                            <i class="far fa-calendar text-gray-400"></i>
+                            <?php echo formatDate($leave['start_date']); ?> &ndash; <?php echo formatDate($leave['end_date']); ?>
+                        </span>
+                        <span class="inline-flex items-center gap-1.5">
+                            <i class="fas fa-hourglass-half text-gray-400"></i>
+                            <span><strong class="font-semibold text-gray-900"><?php echo $leave['total_days']; ?></strong> working days</span>
+                        </span>
+                        <span class="inline-flex items-center gap-1.5 text-gray-500">
+                            <i class="far fa-clock text-gray-400"></i>Submitted <?php echo timeAgo($leave['created_at']); ?>
+                        </span>
+                    </div>
+
+                    <div class="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-5 lg:gap-6">
+                        <!-- Main column: reason, certificate, approval chain -->
+                        <div class="space-y-5 lg:col-span-3">
+                            <!-- Reason -->
+                            <div class="rounded-xl bg-gray-50 px-4 py-3 ring-1 ring-inset ring-gray-100">
+                                <p class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Reason</p>
+                                <p class="text-sm leading-relaxed text-gray-700"><?php echo nl2br(sanitize($leave['reason'])); ?></p>
+                            </div>
+
+                            <?php if ($leave['leave_type'] === 'medical' && !empty($leave['supporting_document'])): ?>
+                                <!-- Medical Certificate -->
+                                <div class="flex flex-col gap-3 rounded-xl border border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div class="flex items-center gap-3">
+                                        <span class="icon-chip-sm chip-rose"><i class="fas fa-file-pdf"></i></span>
+                                        <div>
+                                            <p class="text-sm font-medium text-gray-900">Medical Certificate</p>
+                                            <p class="text-xs text-gray-500">PDF document attached by student</p>
+                                        </div>
+                                    </div>
+                                    <button type="button" data-pdf-url="<?php echo htmlspecialchars(adminDocumentUrl($leave['id'], 'medical'), ENT_QUOTES, 'UTF-8'); ?>" onclick="openPdfViewer(this.dataset.pdfUrl)" class="btn btn-secondary btn-sm w-full sm:w-auto">
+                                        <i class="fas fa-eye"></i>View Document
+                                    </button>
+                                </div>
+                            <?php endif; ?>
+
+                            <!-- Approval Chain -->
+                            <div>
+                                <p class="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500">Approval Chain</p>
+                                <ol>
+                                    <?php foreach ($approvalChain as $step): ?>
+                                        <?php
+                                        $stepStatus = $step['status'] ?? 'pending';
+                                        $stepMarker = $timelineMarker[$stepStatus] ?? $timelineMarker['pending'];
+                                        ?>
+                                        <li class="group relative flex gap-3 pb-5 last:pb-0">
+                                            <span class="absolute bottom-0 left-4 top-9 -ml-px w-px bg-gray-200 group-last:hidden" aria-hidden="true"></span>
+                                            <span class="relative flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs ring-1 ring-inset <?php echo $stepMarker[0]; ?>">
+                                                <i class="fas <?php echo $stepMarker[1]; ?>"></i>
+                                            </span>
+                                            <div class="min-w-0 flex-1 pt-1">
+                                                <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
+                                                    <span class="text-sm font-semibold text-gray-900"><?php echo sanitize($step['stage']); ?></span>
+                                                    <?php if (!empty($step['approved_at'])): ?>
+                                                        <span class="text-xs text-gray-500"><?php echo formatDateTime($step['approved_at']); ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                                <?php if (!empty($step['approver_name'])): ?>
+                                                    <p class="mt-0.5 text-xs text-gray-500">
+                                                        <?php echo sanitize($step['approver_name']); ?>
+                                                        <?php if (!empty($step['auto_approved'])): ?>
+                                                            &middot; settled by the Guide's approval (same person)
+                                                        <?php endif; ?>
+                                                    </p>
+                                                <?php endif; ?>
+                                                <?php if (!empty($step['remarks'])): ?>
+                                                    <p class="mt-2 rounded-lg bg-gray-50 px-3 py-2 text-sm italic text-gray-700 ring-1 ring-inset ring-gray-100">"<?php echo sanitize($step['remarks']); ?>"</p>
+                                                <?php endif; ?>
+                                                <?php if ($step['stage'] === 'HOD' && !empty($step['payment_status'])): ?>
+                                                    <div class="mt-2 flex items-center gap-2">
+                                                        <span class="text-xs text-gray-500">Payment Status:</span>
+                                                        <?php echo getPaymentStatusBadge($step['payment_status']); ?>
+                                                    </div>
+                                                <?php endif; ?>
+                                            </div>
+                                        </li>
+                                    <?php endforeach; ?>
+                                </ol>
+                            </div>
+                        </div>
+
+                        <!-- Side column: extended-leave notice, Dean AP document -->
+                        <div class="space-y-4 lg:col-span-2">
+                            <!-- Extended Leave Notice -->
+                            <?php if ($isExtended): ?>
+                                <div class="alert alert-warning">
+                                    <i class="fas fa-exclamation-triangle mt-0.5 text-amber-500"></i>
+                                    <div class="min-w-0">
+                                        <p class="font-semibold">Extended Leave (>15 days)</p>
+                                        <p class="mt-1">
+                                            This application requires Dean AP approval document before final approval.
+                                        </p>
+                                        <p class="mt-2 flex flex-wrap items-center gap-2">
+                                            <span>Payment Status:</span>
+                                            <?php echo getPaymentStatusBadge($leave['hod_payment_status'] ?? null); ?>
+                                        </p>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+
+                            <!-- Dean AP Document -->
+                            <div>
+                                <p class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Dean AP Approval Document</p>
+                                <?php if ($hasDocument): ?>
+                                    <div class="flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3">
+                                        <div class="flex min-w-0 items-center gap-3">
+                                            <span class="icon-chip-sm chip-emerald"><i class="fas fa-file-pdf"></i></span>
+                                            <div class="min-w-0">
+                                                <p class="text-sm font-medium text-gray-900">Document Uploaded</p>
+                                                <p class="text-xs text-gray-500">Signed Dean AP approval (PDF)</p>
+                                            </div>
+                                        </div>
+                                        <a href="<?php echo htmlspecialchars(adminDocumentUrl($leave['id'], 'dean_ap'), ENT_QUOTES, 'UTF-8'); ?>"
+                                           target="_blank" rel="noopener"
+                                           class="btn btn-secondary btn-sm">
+                                            <i class="fas fa-download"></i>View
+                                        </a>
+                                    </div>
+                                <?php else: ?>
+                                    <form method="POST" enctype="multipart/form-data" class="rounded-xl border border-dashed border-gray-300 bg-gray-50/60 p-4">
+                                        <?php echo getCSRFField(); ?>
+                                        <input type="hidden" name="action" value="upload_document">
+                                        <input type="hidden" name="leave_id" value="<?php echo $leave['id']; ?>">
+
+                                        <label for="dean_document_<?php echo (int) $leave['id']; ?>" class="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                            <i class="fas fa-file-upload text-gray-400"></i>Upload signed Dean AP approval
+                                        </label>
+                                        <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                                            <input type="file"
+                                                   id="dean_document_<?php echo (int) $leave['id']; ?>"
+                                                   name="dean_document"
+                                                   accept=".pdf"
+                                                   required
+                                                   class="block w-full min-w-0 flex-1 rounded-lg text-sm text-gray-600 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:text-sm file:font-semibold file:text-gray-700 file:shadow-sm file:ring-1 file:ring-inset file:ring-gray-300 hover:file:bg-gray-50">
+                                            <button type="submit" class="btn btn-primary">
+                                                <i class="fas fa-upload"></i>Upload
+                                            </button>
+                                        </div>
+                                        <p class="form-help">PDF only, max 5MB</p>
+                                    </form>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Content -->
-                <div class="p-6">
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                        <!-- Student Info -->
-                        <div>
-                            <h4 class="text-sm font-semibold text-gray-700 mb-3 uppercase">Student Details</h4>
-                            <div class="space-y-2">
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Name:</span>
-                                    <span class="font-medium text-gray-900"><?php echo sanitize($leave['student_name']); ?></span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Roll Number:</span>
-                                    <span class="font-medium text-gray-900"><?php echo sanitize($leave['roll_number']); ?></span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Email:</span>
-                                    <span class="font-medium text-gray-900 text-sm"><?php echo sanitize($leave['student_email']); ?></span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Leave Details -->
-                        <div>
-                            <h4 class="text-sm font-semibold text-gray-700 mb-3 uppercase">Leave Details</h4>
-                            <div class="space-y-2">
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Type:</span>
-                                    <?php echo getLeaveTypeBadge($leave['leave_type']); ?>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">From:</span>
-                                    <span class="font-medium text-gray-900"><?php echo formatDate($leave['start_date']); ?></span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">To:</span>
-                                    <span class="font-medium text-gray-900"><?php echo formatDate($leave['end_date']); ?></span>
-                                </div>
-                                <div class="flex justify-between">
-                                    <span class="text-gray-600">Duration:</span>
-                                    <span class="font-bold text-orange-600"><?php echo $leave['total_days']; ?> working days</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Reason -->
-                    <div class="mb-6">
-                        <h4 class="text-sm font-semibold text-gray-700 mb-2 uppercase">Reason</h4>
-                        <div class="bg-gray-50 rounded-lg p-4">
-                            <p class="text-gray-700"><?php echo nl2br(sanitize($leave['reason'])); ?></p>
-                        </div>
-                    </div>
-
-                    <?php if ($leave['leave_type'] === 'medical' && !empty($leave['supporting_document'])): ?>
-                        <!-- Medical Certificate -->
-                        <div class="mb-6">
-                            <h4 class="text-sm font-semibold text-gray-700 mb-2 uppercase">Medical Certificate</h4>
-                            <div class="p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                                <div class="flex items-center justify-between">
-                                    <div class="flex items-center">
-                                        <i class="fas fa-file-pdf text-red-500 text-2xl mr-3"></i>
-                                        <div>
-                                            <p class="font-medium text-gray-900">Supporting Document</p>
-                                            <p class="text-sm text-gray-600">PDF document attached by student</p>
-                                        </div>
-                                    </div>
-                                    <button type="button" onclick="openPdfViewer('<?php echo BASE_URL; ?>/public/<?php echo sanitize($leave['supporting_document']); ?>')" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                                        <i class="fas fa-eye mr-2"></i>View Document
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                <!-- Action Buttons -->
+                <div class="card-footer flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <?php if (!$hasDocument): ?>
+                        <p class="flex items-center gap-2 text-sm text-gray-500">
+                            <i class="fas fa-lock text-gray-400"></i>Upload the Dean AP document to enable final approval
+                        </p>
                     <?php endif; ?>
-
-                    <!-- Approval Chain -->
-                    <div class="mb-6">
-                        <h4 class="text-sm font-semibold text-gray-700 mb-3 uppercase">Approval Chain</h4>
-                        <div class="space-y-3">
-                            <?php foreach ($approvalChain as $approval): ?>
-                                <div class="flex items-start p-3 <?php echo $approval['action'] === 'approved' ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'; ?> rounded-lg">
-                                    <div class="flex-shrink-0 mr-3">
-                                        <?php if ($approval['action'] === 'approved'): ?>
-                                            <i class="fas fa-check-circle text-green-600 text-xl"></i>
-                                        <?php else: ?>
-                                            <i class="fas fa-times-circle text-red-600 text-xl"></i>
-                                        <?php endif; ?>
-                                    </div>
-                                    <div class="flex-1">
-                                        <div class="flex items-center justify-between mb-1">
-                                            <span class="font-semibold text-gray-900"><?php echo sanitize($approval['approver_name']); ?></span>
-                                            <span class="text-xs text-gray-500"><?php echo timeAgo($approval['created_at']); ?></span>
-                                        </div>
-                                        <p class="text-xs text-gray-600 mb-1"><?php echo ucfirst(str_replace('_', ' ', $approval['role'])); ?></p>
-                                        <?php if (!empty($approval['remarks'])): ?>
-                                            <p class="text-sm text-gray-700 mt-2 italic">"<?php echo sanitize($approval['remarks']); ?>"</p>
-                                        <?php endif; ?>
-                                        <?php if ($approval['role'] === 'hod' && !empty($approval['payment_status'])): ?>
-                                            <div class="mt-2">
-                                                <span class="text-xs text-gray-600">Payment Status: </span>
-                                                <?php echo getPaymentStatusBadge($approval['payment_status']); ?>
-                                            </div>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-
-                    <!-- Extended Leave Notice -->
-                    <?php if ($isExtended): ?>
-                        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-                            <div class="flex items-start">
-                                <i class="fas fa-exclamation-triangle text-yellow-600 text-lg mr-3 mt-0.5"></i>
-                                <div class="flex-1">
-                                    <p class="text-sm font-semibold text-yellow-800 mb-1">Extended Leave (>15 days)</p>
-                                    <p class="text-sm text-yellow-700">
-                                        This application requires Dean AP approval document before final approval.
-                                        Payment Status: <?php echo getPaymentStatusBadge($leave['payment_status'] ?? 'unpaid'); ?>
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-
-                    <!-- Dean AP Document -->
-                    <div class="mb-6">
-                        <h4 class="text-sm font-semibold text-gray-700 mb-3 uppercase">Dean AP Approval Document</h4>
-                        <?php if ($hasDocument): ?>
-                            <div class="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
-                                <div class="flex items-center">
-                                    <i class="fas fa-file-pdf text-red-600 text-2xl mr-3"></i>
-                                    <div>
-                                        <p class="font-medium text-gray-900">Document Uploaded</p>
-                                        <p class="text-sm text-gray-600"><?php echo sanitize($leave['dean_ap_document']); ?></p>
-                                    </div>
-                                </div>
-                                <a href="<?php echo BASE_URL; ?>/public/uploads/<?php echo sanitize($leave['dean_ap_document']); ?>"
-                                   target="_blank"
-                                   class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                                    <i class="fas fa-download mr-2"></i>View
-                                </a>
-                            </div>
-                        <?php else: ?>
-                            <form method="POST" enctype="multipart/form-data" class="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-                                <?php echo getCSRFField(); ?>
-                                <input type="hidden" name="action" value="upload_document">
-                                <input type="hidden" name="leave_id" value="<?php echo $leave['id']; ?>">
-
-                                <div class="flex items-center space-x-4">
-                                    <div class="flex-1">
-                                        <input type="file"
-                                               name="dean_document"
-                                               accept=".pdf"
-                                               required
-                                               class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                                        <p class="text-xs text-gray-500 mt-1">Upload Dean AP approval document (PDF only, max 5MB)</p>
-                                    </div>
-                                    <button type="submit" class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                                        <i class="fas fa-upload mr-2"></i>Upload
-                                    </button>
-                                </div>
-                            </form>
-                        <?php endif; ?>
-                    </div>
-
-                    <!-- Action Buttons -->
-                    <div class="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
-                        <button onclick="rejectLeave(<?php echo $leave['id']; ?>)"
-                                class="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">
-                            <i class="fas fa-times mr-2"></i>Reject
+                    <div class="flex items-center gap-2 sm:ml-auto">
+                        <button type="button" onclick="rejectLeave(<?php echo $leave['id']; ?>)"
+                                class="btn btn-soft-danger flex-1 sm:flex-none">
+                            <i class="fas fa-times"></i>Reject
                         </button>
-                        <button onclick="approveLeave(<?php echo $leave['id']; ?>)"
-                                class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                        <button type="button" onclick="approveLeave(<?php echo $leave['id']; ?>)"
+                                class="btn btn-success flex-1 sm:flex-none"
                                 <?php if (!$hasDocument): ?>disabled title="Upload Dean AP document first"<?php endif; ?>>
-                            <i class="fas fa-check mr-2"></i>Final Approve
+                            <i class="fas fa-check"></i>Final Approve
                         </button>
                     </div>
                 </div>
@@ -306,40 +331,43 @@ $pendingLeaves = $leaveClass->getPendingForAdmin();
 <?php endif; ?>
 
 <!-- Approval Modal -->
-<div id="approvalModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl max-w-md w-full">
-        <div class="px-6 py-4 border-b border-gray-200">
-            <h3 class="text-xl font-semibold text-gray-900" id="modalTitle">Confirm Approval</h3>
+<div id="approvalModal" class="hidden fixed inset-0 z-50 flex items-end justify-center bg-gray-900/50 backdrop-blur-sm sm:items-center sm:p-4">
+    <div class="modal-panel max-w-md rounded-b-none sm:rounded-b-2xl">
+        <div class="flex items-center justify-between gap-4 border-b border-gray-100 px-5 py-4 sm:px-6">
+            <h3 class="text-base font-semibold text-gray-900 sm:text-lg" id="modalTitle">Confirm Approval</h3>
+            <button type="button" onclick="closeApprovalModal()" class="btn-icon" title="Close" aria-label="Close">
+                <i class="fas fa-times"></i>
+            </button>
         </div>
         <!-- noloading: submitted via fetch; keeps main.js from adding a btn-loading
              state that nothing removes when the API errors -->
-        <form id="approvalForm" class="p-6 noloading">
+        <form id="approvalForm" class="noloading">
             <?php echo getCSRFField(); ?>
             <input type="hidden" id="actionLeaveId" name="leave_id">
             <input type="hidden" id="actionType" name="action">
             <input type="hidden" name="role" value="admin">
 
-            <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-2">Remarks *</label>
+            <div class="px-5 py-5 sm:px-6">
+                <label for="actionRemarks" class="form-label">Remarks <span class="text-rose-500">*</span></label>
                 <textarea id="actionRemarks"
                           name="remarks"
                           rows="4"
                           required
                           minlength="5"
-                          class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                          class="form-textarea"
                           placeholder="Enter your remarks (minimum 5 characters)..."></textarea>
             </div>
 
-            <div class="flex items-center justify-end space-x-3">
+            <div class="flex items-center justify-end gap-2 rounded-b-none border-t border-gray-100 bg-gray-50/70 px-5 py-4 sm:rounded-b-2xl sm:px-6">
                 <button type="button"
                         onclick="closeApprovalModal()"
-                        class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
+                        class="btn btn-secondary">
                     Cancel
                 </button>
                 <button type="submit"
                         id="submitBtn"
-                        class="px-6 py-2 rounded-lg text-white">
-                    <i class="fas fa-check mr-2"></i>Confirm
+                        class="btn btn-primary">
+                    <i class="fas fa-check"></i>Confirm
                 </button>
             </div>
         </form>
@@ -352,7 +380,7 @@ function approveLeave(leaveId) {
     document.getElementById('actionLeaveId').value = leaveId;
     document.getElementById('actionType').value = 'approve';
     document.getElementById('actionRemarks').placeholder = 'Enter approval remarks (e.g., Approved with Dean AP document)...';
-    document.getElementById('submitBtn').className = 'px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700';
+    document.getElementById('submitBtn').className = 'btn btn-success';
     document.getElementById('approvalModal').classList.remove('hidden');
 }
 
@@ -361,7 +389,7 @@ function rejectLeave(leaveId) {
     document.getElementById('actionLeaveId').value = leaveId;
     document.getElementById('actionType').value = 'reject';
     document.getElementById('actionRemarks').placeholder = 'Enter rejection reason...';
-    document.getElementById('submitBtn').className = 'px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700';
+    document.getElementById('submitBtn').className = 'btn btn-danger';
     document.getElementById('approvalModal').classList.remove('hidden');
 }
 
@@ -379,7 +407,7 @@ document.getElementById('approvalForm').addEventListener('submit', function(e) {
     const originalText = submitBtn.innerHTML;
 
     submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Processing...';
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>Processing...';
 
     fetch('<?php echo BASE_URL; ?>/api/approvals/process.php', {
         method: 'POST',
@@ -407,20 +435,23 @@ document.getElementById('approvalForm').addEventListener('submit', function(e) {
 
 function showNotification(message, type) {
     const colors = {
-        success: 'bg-green-500',
-        error: 'bg-red-500',
-        warning: 'bg-yellow-500',
-        info: 'bg-blue-500'
+        success: 'bg-emerald-600',
+        error: 'bg-rose-600',
+        warning: 'bg-amber-500',
+        info: 'bg-blue-600'
     };
 
     const notification = document.createElement('div');
-    notification.className = `fixed top-4 right-4 ${colors[type]} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in`;
+    notification.className = `fixed top-20 right-4 ${colors[type]} z-50 max-w-sm rounded-xl px-4 py-3 text-sm font-medium text-white shadow-lg animate-fade-in`;
     notification.innerHTML = `
-        <div class="flex items-center">
-            <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'} mr-2"></i>
-            <span>${message}</span>
+        <div class="flex items-center gap-2.5">
+            <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i>
+            <span></span>
         </div>
     `;
+    // The message is text from the server (it can quote stored values); never
+    // parse it as markup.
+    notification.querySelector('span').textContent = message;
 
     document.body.appendChild(notification);
 
@@ -452,15 +483,16 @@ document.getElementById('pdfModal')?.addEventListener('click', function(e) {
 
 <!-- PDF Viewer Modal (Full Screen) -->
 <div id="pdfModal" class="hidden fixed inset-0 bg-gray-900 z-50 flex flex-col">
-    <div class="px-4 py-3 bg-gray-800 flex justify-between items-center flex-shrink-0">
-        <h3 class="text-lg font-semibold text-white">
-            <i class="fas fa-file-medical text-blue-400 mr-2"></i>Medical Certificate
+    <div class="flex flex-shrink-0 items-center justify-between gap-4 border-b border-white/10 bg-gray-900 px-4 py-3 sm:px-6">
+        <h3 class="flex items-center gap-3 text-sm font-semibold text-white sm:text-base">
+            <span class="icon-chip-sm bg-white/10 text-rose-300 ring-white/10"><i class="fas fa-file-medical"></i></span>
+            Medical Certificate
         </h3>
-        <button onclick="closePdfViewer()" class="text-gray-300 hover:text-white p-2 hover:bg-gray-700 rounded-full transition-colors">
-            <i class="fas fa-times text-xl"></i>
+        <button type="button" onclick="closePdfViewer()" class="btn-icon h-9 w-9 text-gray-300 hover:bg-white/10 hover:text-white" title="Close" aria-label="Close">
+            <i class="fas fa-times text-lg"></i>
         </button>
     </div>
-    <div class="flex-1 min-h-0">
+    <div class="flex-1 min-h-0 bg-gray-800">
         <iframe id="pdfFrame" src="" class="w-full h-full border-0"></iframe>
     </div>
 </div>

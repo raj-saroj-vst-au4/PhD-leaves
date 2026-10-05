@@ -16,6 +16,9 @@ GRANT SELECT ON phd_timeoff.users              TO 'attendance_app'@'localhost';
 GRANT SELECT ON phd_timeoff.students           TO 'attendance_app'@'localhost';
 GRANT SELECT ON phd_timeoff.holidays           TO 'attendance_app'@'localhost';
 GRANT SELECT ON phd_timeoff.leave_applications TO 'attendance_app'@'localhost';
+-- The monthly report dates a deactivation from the portal's audit entry
+-- (users has no deactivated_at). Without this it falls back to updated_at.
+GRANT SELECT ON phd_timeoff.system_logs        TO 'attendance_app'@'localhost';
 
 -- APPEND-ONLY evidence tables: INSERT + SELECT, no UPDATE, no DELETE, ever.
 -- (att_records/att_audit also have BEFORE UPDATE/DELETE triggers as backup.)
@@ -27,7 +30,8 @@ GRANT SELECT ON phd_timeoff.att_records_current TO 'attendance_app'@'localhost';
 -- never deleted.
 GRANT SELECT, INSERT, UPDATE ON phd_timeoff.att_attempts TO 'attendance_app'@'localhost';
 
--- Operational tables: normal DML, no DDL.
+-- Operational tables: normal DML, no DDL. (Revoked templates are erased by
+-- UPDATE — embeddings='[]' — so att_face_templates still needs no DELETE.)
 GRANT SELECT, INSERT, UPDATE         ON phd_timeoff.att_face_templates  TO 'attendance_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE         ON phd_timeoff.att_devices         TO 'attendance_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE         ON phd_timeoff.att_enroll_sessions TO 'attendance_app'@'localhost';
@@ -38,6 +42,7 @@ GRANT SELECT, INSERT                 ON phd_timeoff.att_extensions      TO 'atte
 GRANT SELECT, INSERT, UPDATE         ON phd_timeoff.att_allowed_ips     TO 'attendance_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON phd_timeoff.att_settings        TO 'attendance_app'@'localhost';
 GRANT SELECT, INSERT, UPDATE         ON phd_timeoff.att_reports         TO 'attendance_app'@'localhost';
+GRANT SELECT, INSERT                 ON phd_timeoff.att_frame_hashes    TO 'attendance_app'@'localhost';
 
 FLUSH PRIVILEGES;
 

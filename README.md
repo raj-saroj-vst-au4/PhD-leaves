@@ -19,16 +19,15 @@ Leave application portal for PhD students at IIT Bombay's School of Management. 
 ├── classes/                Domain classes (Leave, User, Approval, Holiday)
 ├── config/                 Site, DB, and mail configuration (DB+mail are gitignored)
 ├── cron/                   Scheduled jobs (see "Cron jobs" below)
-├── database/               schema.sql + ad-hoc backups (gitignored)
+├── database/               schema.sql, migrations/, create_admin.php, ad-hoc backups (gitignored)
 ├── faculty/                Guide / TA coordinator pages
 ├── hod/                    HOD pages
 ├── student/                Student pages
 ├── includes/               Auth, helpers, EmailService, email templates
-├── logs/                   Cron + error logs (gitignored)
-├── public/                 Static assets, vendored libs, user uploads
+├── .private/               Uploaded documents, error/cron logs, report CSVs (never web-served; gitignored)
+├── public/                 Static assets and vendored libs
 ├── vendor/                 Composer-managed PHP deps (gitignored)
 ├── composer.json
-├── install.php             First-run installer (delete after use)
 ├── index.php               Front controller / role redirect
 └── .htaccess               Apache rules and security headers
 ```
@@ -70,38 +69,67 @@ Then edit each file and replace the `CHANGE_ME` placeholders. Site-wide constant
 
 ### 3. Create the database
 
+Load the schema, then every migration in `database/migrations/` in filename (date) order. The migrations are idempotent, so re-running one is harmless.
+
 ```bash
 mysql -u root -p -e "CREATE DATABASE phd_timeoff CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u root -p phd_timeoff < database/schema.sql
+for f in database/migrations/*.sql; do mysql -u root -p phd_timeoff < "$f"; done
 ```
 
-### 4. Run the installer (first time only)
+### 4. Create the first admin (command line)
 
-Visit `https://your-host/phdtimeoff/install.php` and follow the steps. The installer creates the initial admin user and writes a `.installed` marker. **Delete `install.php` afterwards.**
+There is no web installer. Create the first admin account from a shell on the server:
+
+```bash
+php database/create_admin.php "Full Name" name@iitb.ac.in
+```
+
+It prints a one-time sign-up link (valid for `TOKEN_EXPIRY_HOURS`); open it to set the password. Further users are invited from **Admin → User Management**.
 
 ### 5. Web server
 
-Point the document root (or an alias) at the project. The `.htaccess` expects `RewriteBase /phdtimeoff`; adjust if you mount it elsewhere. Make sure `logs/` and `public/uploads/` are writable by the PHP user.
+Point the document root (or an alias) at the project. Make sure `.private/` and its subdirectories (`logs/`, `medical_documents/`, `dean_ap_documents/`) are writable by the PHP user **and** by the user whose crontab runs the cron jobs. Production runs nginx, which ignores `.htaccess`: it must refuse dot-paths (`location ~ /\.`) so `.private/` is never served. On Apache, the `.htaccess` expects `RewriteBase /phdtimeoff`; adjust if you mount it elsewhere.
 
 ## Cron jobs
 
-All four scripts are idempotent — running them more than once on the same trigger is safe. Suggested crontab entries:
+All five scripts are idempotent — running them more than once on the same trigger is safe. Each one decides for itself whether today is its day, so a schedule only has to *include* that day: the two month-end jobs are scheduled daily from the 20th to the 31st and exit unless today is the (2nd-)last working day. "Working day" means Monday–Friday, minus holidays in the `holidays` table, plus any weekend day that table declares working. Crontab entries — production paths: the portal is at `/var/www/html/phdtimeoff` and the jobs run from `r4id`'s crontab (adjust the path for another checkout):
 
 ```cron
 # Reset leave balances on Jan 1 and Jul 1
-0 0 1 1,7 * /usr/bin/php /srv/www/phdtimeoff/cron/reset_leave_balances.php
+0 0 1 1,7 * /usr/bin/php /var/www/html/phdtimeoff/cron/reset_leave_balances.php
 
-# Monthly attendance reminder to students (fires only on the 2nd-last working day)
-0 9 25-31 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_reminder.php
+# Monthly attendance reminder to students (acts only on the 2nd-last working day)
+0 9 20-31 * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_reminder.php
 
-# Monthly leave report to admins
-0 8 1 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_report.php
+# Monthly leave report to admins (acts only on the last working day, at 17:00)
+0 17 20-31 * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_report.php
 
-# Daily 11:00 reminder to guides/TAs about leaves still pending at their stage
-0 11 * * * /usr/bin/php /srv/www/phdtimeoff/cron/daily_pending_reminder.php
+# 11:00 reminder to guides/TAs about leaves still pending at their stage (skips non-working days)
+0 11 * * * /usr/bin/php /var/www/html/phdtimeoff/cron/daily_pending_reminder.php
+
+# Monthly attendance sign-off: opens the previous month on the 1st (after the
+# attendance report at 08:00); on other days it only retries emails that failed
+30 8 * * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_attendance_approval.php
 ```
 
-Each script writes a per-day log under `logs/cron_*.log` and an entry to the `system_logs` table.
+The monthly report used to be scheduled `0 8 1 * *`: on the 1st the script found it was not the last working day and exited, so it never ran.
+
+`reset_leave_balances.php` also takes options for running it by hand:
+
+```bash
+# Catch up a missed reset: must be the most recent 1 January or 1 July, not in the future.
+# Preview first (shows each student's balances before/after, changes and sends nothing):
+php /var/www/html/phdtimeoff/cron/reset_leave_balances.php --date=2026-07-01 --dry-run
+php /var/www/html/phdtimeoff/cron/reset_leave_balances.php --date=2026-07-01
+
+# Apply the reset without emailing the students (combine with --date, or run on 1 Jan / 1 Jul)
+php /var/www/html/phdtimeoff/cron/reset_leave_balances.php --date=2026-07-01 --no-email
+```
+
+A second run for the same date finds nothing to do and emails nobody.
+
+Each script writes a per-day log `cron_*.log` under `.private/logs/` (`LOG_DIR`) and an entry to the `system_logs` table; the monthly report also leaves its CSV (`monthly_report_YYYY-MM.csv`) there. The attendance module's scheduled jobs are described in `attendance/DEPLOY-NOTES.md` and `attendance/RUNBOOK.md`.
 
 ## Database
 
@@ -113,7 +141,7 @@ Schema is in [database/schema.sql](database/schema.sql). Key tables:
 | `students`           | Roll number, joining date, guide & TA pointers       |
 | `leave_balances`     | Per-student running balances per leave type          |
 | `leave_applications` | One row per request, with stage-wise statuses        |
-| `holidays`           | Working-day calendar used for monthly reminder logic |
+| `holidays`           | Holidays and declared working days (cron day checks) |
 | `leave_adjustments`  | Manual balance adjustments by admin                  |
 | `email_logs`         | Audit trail of every send attempt                    |
 | `system_logs`        | Audit trail of cron runs and admin actions           |
@@ -133,8 +161,8 @@ composer test:coverage       # HTML coverage report under coverage/
 ## Security notes
 
 - `config/database.php`, `config/mail.php`, and `proddump.sql` are gitignored — never commit them.
-- `public/uploads/medical_documents/` contains student-supplied PDFs and is gitignored. Back it up out-of-band; do not check it in.
-- Apache `.htaccess` blocks direct access to `composer.json`, `composer.lock`, `.env`, and `.gitignore`.
+- `.private/` holds student-supplied PDFs, logs and report CSVs and is gitignored. Back it up out-of-band; do not check it in. Documents are served only through `api/files/download.php`, which checks who is asking.
+- Production nginx ignores `.htaccess` and serves every non-PHP file under the webroot as-is; keep non-public files out of the webroot or behind a filesystem permission, not an Apache rule.
 - Students must sign up with an email under `ALLOWED_DOMAIN` (`iitb.ac.in`).
 - Sessions time out after 1 hour (`SESSION_TIMEOUT`).
-- Delete `install.php` after first-time setup.
+- There is no web installer; the first admin is created with `php database/create_admin.php` (CLI only).

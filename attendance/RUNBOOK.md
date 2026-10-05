@@ -17,11 +17,53 @@ trust each other through short-lived HMAC tickets.
    override, holiday calendar, emergency extension). IST throughout.
 4. **Device** — the `att_device` cookie matches the phone bound at enrollment.
 5. **Strict code** (optional) — rotating 6-digit office-screen code.
-6. **Not already marked / attempt budget.**
+6. **Not already marked / attempt budget.** The budget (`max_attempts_per_day`)
+   counts failed attempts **and results sent to review**, and is claimed
+   atomically before any face work, so parallel requests cannot overshoot it.
+   Server-side problems never count: `ENGINE_ERROR`, `SERVER_ERROR`, refused
+   reservations (`TOO_MANY_ATTEMPTS`) and attempts left `VERIFYING` by a crash
+   (after 5 minutes). The office's "failed attempts" figures leave them out too.
 7. **Face** — random pose-challenge liveness, identity match vs the student's
    template, and cross-match against the whole cohort (so marking on someone
    else's account is caught and identified). Borderline → **pending review**
    (never a silent absence); clear fail → recorded with photos as evidence.
+   - The challenge is one of 10 sequences of 3–4 steps, drawn uniformly with a
+     CSPRNG per attempt: *centre*, a *turn* to either side, and a turn to the
+     *other* side. Sides are never named (left/right was mis-scored in
+     production); "other" is checked as the opposite sign within the burst. It
+     is bound to a single-use token for this student and phone, expires after
+     2 minutes, and a burst that arrives faster than the steps can be performed
+     is refused (`CHALLENGE_TOO_FAST`). Issue is capped at 4 a minute and
+     3 × the attempt budget a day (`TOO_MANY_CHALLENGES`), so a client cannot
+     re-roll until it draws a sequence its photos fit.
+   - The phone sends exactly two frames per step, in order; each step is judged
+     on its own two frames only. Frames must be JPEGs of at most 1920 px a
+     side: baseline with a single scan (what the page's camera capture
+     produces), or progressive with no more than 16 scans. Anything else —
+     scan bombs, PNG, oversized headers — is refused before decoding.
+   - Burst content: two byte-identical frames are refused (`DUPLICATE_FRAMES`);
+     a frame this student has submitted before, in any earlier mark or at
+     enrollment, fails the attempt (`REPLAYED_FRAME`; SHA-256s are kept in
+     `att_frame_hashes`, no image content); a turn frame that is the mirror
+     image of another turn step's frame fails it (`MIRRORED_FRAMES`).
+   - **Every** usable frame must match the enrolled template (the weakest frame
+     decides, not the median), all frames must be the same person
+     (`MIXED_FACES`), and every frame is cross-matched against the cohort.
+   - Face work runs on a small worker pool off the web server's event loop. If
+     every slot stays busy for 30 s the student gets `SERVER_BUSY`; nothing was
+     judged, the challenge is still unused, and the page resends the same
+     frames automatically while the challenge has time left.
+   - **What the pose challenge can and cannot do.** It raises the bar against
+     casual replay: holding up a photo or a phone screen, replaying a recorded
+     clip, re-sending an earlier burst, or one photo plus its mirror image. It
+     **cannot** stop a modified client that fabricates frames to order — the
+     phone's uploads are just JPEGs, and someone holding a few photos of the
+     student at different angles (slightly re-cropped each time) can assemble
+     a burst for any of the 10 sequences. Against that the real controls are
+     the others in this list: the bound phone, the office WiFi and time window,
+     identity and cross-match on every frame, office review of the stored
+     evidence — and strict mode, which requires physical presence at the
+     office screen.
 
 Every failure is logged with a stable code (see `ops/test/gate-matrix.sh`).
 
@@ -31,7 +73,8 @@ Every failure is logged with a stable code (see `ops/test/gate-matrix.sh`).
 attendance/
 ├── backend/            FastAPI app (Docker)
 │   ├── app/            config, db, auth, timewindow, faces, marking, reports, main
-│   ├── tests/          window-engine unit tests
+│   ├── tests/          unit tests (window engine, challenge/judgement, uploads,
+│   │                   budget/engine/pool concurrency, report roster) — pytest
 │   ├── Dockerfile      python:3.12-slim + InsightFace (model baked in)
 │   └── requirements.txt
 ├── docker-compose.yml  backend only, binds 127.0.0.1:3070
@@ -55,6 +98,7 @@ student/attendance.php         student page  + public/js/attendance.js
 admin/attendance.php           office dashboard + public/js/attendance-admin.js
 admin/attendance_display.php   strict-mode office screen
 database/migrations/2026_07_27_attendance.sql
+database/migrations/2026_09_23_attendance_backend.sql   (RESTRICT FKs, challenge timing)
 ```
 
 ## First-time install
@@ -71,7 +115,9 @@ database/migrations/2026_07_27_attendance.sql
 mysql -u root -p phd_timeoff < database/migrations/2026_07_27_attendance.sql
 ```
 The migration is idempotent. It creates `att_*` tables, seeds Mon–Fri 09:00–10:30,
-and installs append-only triggers on `att_records`/`att_audit`.
+and installs append-only triggers on `att_records`/`att_audit`. Then apply the
+later attendance migrations in date order (`2026_08_06_attendance_approvals.sql`,
+`2026_09_23_attendance_backend.sql`); each is safe to re-run.
 
 > If you see *"You do not have the SUPER privilege and binary logging is
 > enabled"*, the tables were created but the triggers were skipped. Fix once:
@@ -192,6 +238,15 @@ sudo systemctl enable --now attendance-report.timer attendance-purge.timer atten
 - Present = self-marked or manual; **Excused = office-excused OR an approved
   leave** in the leave system (auto-pulled, so approved leave never counts as
   absence); Absent = a working day with none of the above.
+- The roster is everyone **on the roll during the month**: a student who joined
+  mid-month is accountable from their `joining_date`, and a student deactivated
+  mid-month still appears for the days before they left. Days off the roll —
+  before joining, and from a deactivation day up to and including the day of a
+  reactivation — show as **N** and are not counted as working days for that
+  student (the "On roll" column says why). A day with an actual mark always
+  counts. `users` has no deactivation date, so the dates come from the
+  portal's deactivation/reactivation entries in `system_logs`, else
+  `users.updated_at`.
 - Generate/download any month on demand from Attendance → Reports.
 
 ## Troubleshooting
@@ -210,6 +265,15 @@ sudo systemctl enable --now attendance-report.timer attendance-purge.timer atten
   across a mysqld restart; since 2026-08-05 the compose mounts the
   `/var/run/mysqld` *directory* so this fixes itself. If it recurs anyway:
   `docker restart attendance-backend`.
+- **Students get "The server is busy" (`SERVER_BUSY`)**: every face-engine slot
+  stayed occupied for `FACE_QUEUE_TIMEOUT` (30 s). Nothing was counted against
+  them. If it recurs at the 09:00 rush, raise `FACE_WORKERS` in `.env` (per
+  uvicorn worker; default 2) on a box with spare cores, and restart.
+- **Genuine students failing with `MIXED_FACES`**: the frames of one burst are
+  compared with each other; the default floor is 0.35. Lower it with
+  `INSERT INTO att_settings (skey, svalue) VALUES ('burst_consistency_threshold','0.30')
+  ON DUPLICATE KEY UPDATE svalue=VALUES(svalue);` — and look at the frames
+  first: two different people in one burst is exactly what it is for.
 - **Access denied for user ... @172.x.x.x**: the DB user is granted for
   `localhost` only while the container is on the docker bridge. Either apply
   `ops/grants.sql` (creates `attendance_app@'%'`, the production path) or use
@@ -237,5 +301,17 @@ up `attendance/data/reports/` — those archived XLSX files are the payment reco
 - `att_records` and `att_audit` are append-only at the GRANT level (and triggers):
   corrections are new superseding rows, so the full history is always provable.
 - Biometric data never leaves the server; frames auto-purge at 60 days; the
-  enrollment consent line is shown before capture. Delete a leaver's template
-  via *revoke*.
+  enrollment consent line is shown before capture.
+- **Face templates are erased, not just flagged.** Revoking (the office's
+  *revoke*, or a re-enrollment superseding the old template) wipes the stored
+  embeddings at once; the row stays as the record of who enrolled whom and why
+  it ended. The nightly purge (`/api/jobs/purge-frames`) also revokes and erases
+  the template and phone binding of any student whose portal account is
+  deactivated, and erases any revoked template still holding embeddings. A
+  reactivated student re-enrolls at the office.
+- **A student with attendance history cannot be hard-deleted.** `att_records`
+  and `att_month_approvals` reference students with `ON DELETE RESTRICT`
+  (migration `2026_09_23_attendance_backend.sql`): a delete fails with MySQL
+  error 1451 and removes nothing. Deactivate leavers instead. (Before this,
+  deleting a user cascaded through `students` and silently wiped their
+  attendance — InnoDB does not fire the append-only triggers for cascades.)

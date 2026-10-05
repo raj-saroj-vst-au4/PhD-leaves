@@ -5,6 +5,22 @@
  *
  * Crontab entry:
  * 0 0 1 1,7 * /usr/bin/php /srv/www/phdtimeoff/cron/reset_leave_balances.php
+ *
+ * Options:
+ *   --date=YYYY-MM-DD  catch up a missed run. Must be a 1 January or 1 July, not
+ *                      in the future, and the most recent such date.
+ *   --dry-run          show each student's balances before/after; change nothing,
+ *                      send nothing.
+ *   --no-email         apply the reset but do not email the students.
+ *
+ * Safe to run more than once for the same date: Leave::resetBalances() only
+ * touches balances whose last_reset is before that date, and stamps them with
+ * it. A second run finds nothing to do and emails nobody.
+ *
+ * Catching up the missed 1 July 2026 reset (production PHP was on UTC, so the
+ * 00:00 IST run saw 30 June and exited as "not a reset day"):
+ *   php cron/reset_leave_balances.php --date=2026-07-01 --dry-run
+ *   php cron/reset_leave_balances.php --date=2026-07-01
  */
 
 /*
@@ -29,20 +45,38 @@ set_time_limit(300); // 5 minutes
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../classes/Leave.php';
-require_once __DIR__ . '/../classes/User.php';
 require_once __DIR__ . '/../includes/EmailService.php';
 
-// Log directory
-$logDir = __DIR__ . '/../logs';
+// Arguments. Anything unrecognised stops the run rather than being ignored: a
+// mistyped "--dryrun" must not turn into a real reset.
+$dryRun = false;
+$sendEmail = true;
+$dateArg = null;
+$usage = "Usage: php reset_leave_balances.php [--date=YYYY-MM-DD] [--dry-run] [--no-email]\n";
+foreach (array_slice($argv, 1) as $arg) {
+    if ($arg === '--dry-run') {
+        $dryRun = true;
+    } elseif ($arg === '--no-email') {
+        $sendEmail = false;
+    } elseif (strpos($arg, '--date=') === 0) {
+        $dateArg = substr($arg, strlen('--date='));
+    } elseif ($arg === '--help' || $arg === '-h') {
+        echo $usage;
+        exit(0);
+    } else {
+        fwrite(STDERR, "Unknown argument: $arg\n$usage");
+        exit(2);
+    }
+}
+
+// Log directory: private, never under the webroot's served paths.
+$logDir = rtrim(LOG_DIR, '/');
 if (!is_dir($logDir)) {
-    mkdir($logDir, 0775, true);
+    @mkdir($logDir, 0770, true);
 }
 if (!is_writable($logDir)) {
-    @chmod($logDir, 0775);
-    if (!is_writable($logDir)) {
-        $logDir = sys_get_temp_dir();
-        echo "[WARNING] logs/ directory not writable, logging to $logDir\n";
-    }
+    $logDir = sys_get_temp_dir();
+    echo "[WARNING] " . LOG_DIR . " not writable, logging to $logDir\n";
 }
 $logFile = $logDir . '/cron_reset_balances_' . date('Y-m-d') . '.log';
 
@@ -53,64 +87,88 @@ function cronLog($message) {
     echo "[$timestamp] $message\n";
 }
 
-cronLog("===== Starting Leave Balance Reset =====");
+cronLog("===== Starting Leave Balance Reset" . ($dryRun ? " (DRY RUN)" : "") . " =====");
 
 try {
     $db = getDBConnection();
     $leaveClass = new Leave($db);
-    $userClass = new User($db);
-    $emailService = new EmailService();
 
-    // Check if today is reset day (Jan 1 or Jul 1)
-    $today = date('m-d');
-    if ($today !== '01-01' && $today !== '07-01') {
-        cronLog("Not a reset day. Today is: " . date('Y-m-d'));
-        cronLog("Reset days are: January 1st and July 1st only");
+    $today = date('Y-m-d');
+    if ($dateArg !== null) {
+        // Catch-up run for a missed reset day.
+        try {
+            Leave::assertResetDate($dateArg, $today);
+        } catch (Exception $e) {
+            cronLog("Refusing --date=$dateArg: " . $e->getMessage());
+            exit(2);
+        }
+        $resetDate = $dateArg;
+        cronLog("Catch-up run for reset date $resetDate (today is $today)");
+    } else {
+        // Check if today is reset day (Jan 1 or Jul 1)
+        if (!in_array(date('m-d'), Leave::RESET_MONTH_DAYS, true)) {
+            cronLog("Not a reset day. Today is: $today");
+            cronLog("Reset days are: January 1st and July 1st only (use --date=YYYY-MM-DD to catch up a missed one)");
+            exit(0);
+        }
+        $resetDate = $today;
+        cronLog("Reset day confirmed: " . date('F j, Y'));
+    }
+
+    if ($dryRun) {
+        $rows = $leaveClass->previewReset($resetDate);
+        cronLog("DRY RUN: nothing will be written and no email sent.");
+        cronLog(sprintf("%-12s %-28s %-22s %-22s %s", 'Roll', 'Name', 'Personal', 'Medical', 'Academic'));
+        $counts = ['personal' => 0, 'medical' => 0, 'academic' => 0];
+        foreach ($rows as $row) {
+            $fmt = function ($type) use ($row, &$counts) {
+                $before = number_format((float) $row["before_$type"], 1);
+                if (!$row["do_$type"]) {
+                    if ($type === 'academic' && !$row['academic_eligible']) {
+                        return "$before (not eligible)";
+                    }
+                    return "$before (unchanged)";
+                }
+                $counts[$type]++;
+                return "$before -> " . number_format((float) $row["after_$type"], 1);
+            };
+            cronLog(sprintf("%-12s %-28s %-22s %-22s %s",
+                $row['roll_number'],
+                $row['name'] . " (#{$row['student_id']})",
+                $fmt('personal'), $fmt('medical'), $fmt('academic')));
+        }
+        cronLog(sprintf("Would update for %s: personal %d, medical %d, academic %d (%d student(s) due)",
+            $resetDate, $counts['personal'], $counts['medical'], $counts['academic'], count($rows)));
+        cronLog("===== Dry run finished; no changes made =====");
         exit(0);
     }
 
-    cronLog("Reset day confirmed: " . date('F j, Y'));
+    // Perform reset. Throws on failure, having rolled back; the system_logs
+    // 'cron_leave_reset' row is committed with the balance changes.
+    $result = $leaveClass->resetBalances($resetDate);
 
-    // Idempotency check: prevent double-run on same day
-    $resetDate = date('Y-m-d');
-    $stmt = $db->prepare("SELECT id FROM system_logs
-                          WHERE action = 'cron_leave_reset'
-                          AND description LIKE :pattern
-                          AND created_at >= :today_start");
-    $stmt->execute([
-        ':pattern' => "Leave balances reset%",
-        ':today_start' => $resetDate . ' 00:00:00'
-    ]);
-    if ($stmt->fetch()) {
-        cronLog("Leave balances already reset today. Exiting to prevent double allocation.");
-        exit(0);
-    }
+    cronLog(sprintf("Leave balances reset for %s: personal %d, medical %d, academic %d",
+        $resetDate, $result['personal'], $result['medical'], $result['academic']));
 
-    // Perform reset
-    $result = $leaveClass->resetBalances();
+    $students = $result['students'];
+    if (!$students) {
+        cronLog("No balances were due for $resetDate (already applied). Nothing to email.");
+    } elseif (!$sendEmail) {
+        cronLog(count($students) . " student(s) updated; --no-email given, no notifications sent.");
+    } else {
+        // Only the students this run actually updated.
+        $emailService = new EmailService();
+        cronLog("Emailing " . count($students) . " updated student(s)");
 
-    if ($result) {
-        cronLog("Leave balances reset successfully!");
-
-        // Get all active students
-        $students = $userClass->getAllStudents(true);
-        cronLog("Found " . count($students) . " active students");
-
-        // Calculate eligibility cutoff date to match Leave::resetBalances() logic
-        $eligibilityCutoff = new DateTime();
-        $eligibilityCutoff->modify('-' . (int)ACADEMIC_LEAVE_ELIGIBILITY_MONTHS . ' months');
-        $eligibilityCutoffStr = $eligibilityCutoff->format('Y-m-d');
-
-        // Send notification emails
         $emailsSent = 0;
         $emailsFailed = 0;
 
         foreach ($students as $student) {
             try {
-                $joiningDate = $student['joining_date'] ?? null;
-                $academicEligible = $joiningDate && $joiningDate <= $eligibilityCutoffStr;
-
-                if ($emailService->sendBalanceReset($student, $academicEligible)) {
+                // Academic "reset to N" only for those whose academic balance
+                // was reset now; everyone else is told they are not yet eligible.
+                // $resetDate names the cycle (a catch-up run is not "this month").
+                if ($emailService->sendBalanceReset($student, $student['do_academic'], $resetDate)) {
                     $emailsSent++;
                 } else {
                     $emailsFailed++;
@@ -128,19 +186,14 @@ try {
 
         cronLog("Emails sent: $emailsSent, Failed: $emailsFailed");
 
-        // Log to system_logs table
         $stmt = $db->prepare("INSERT INTO system_logs (user_id, action, module, description)
-                              VALUES (NULL, 'cron_leave_reset', 'cron', :description)");
+                              VALUES (NULL, 'cron_leave_reset_email', 'cron', :description)");
         $stmt->execute([
-            ':description' => "Leave balances reset. Emails sent: $emailsSent, Failed: $emailsFailed"
+            ':description' => "Leave balance reset $resetDate notifications. Emails sent: $emailsSent, Failed: $emailsFailed"
         ]);
-
-        cronLog("===== Leave Balance Reset Completed Successfully =====");
-
-    } else {
-        cronLog("ERROR: Leave balance reset failed!");
-        exit(1);
     }
+
+    cronLog("===== Leave Balance Reset Completed Successfully =====");
 
 } catch (Exception $e) {
     cronLog("FATAL ERROR: " . $e->getMessage());

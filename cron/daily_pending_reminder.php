@@ -1,11 +1,13 @@
 <?php
 /**
  * Cron Job: Daily Pending Leave Reminder
- * Sends a daily reminder at 11:00 AM to each faculty guide and TA coordinator
- * listing leave applications from their students that are still awaiting their action.
+ * Sends a reminder at 11:00 AM on each working day to each faculty guide and TA
+ * coordinator listing leave applications from their students that are still
+ * awaiting their action. Weekends and holidays are skipped; a weekend day the
+ * holidays table declares working is not.
  *
- * Crontab entry:
- * 0 11 * * * /usr/bin/php /srv/www/phdtimeoff/cron/daily_pending_reminder.php
+ * Crontab entry (runs daily; the script skips non-working days itself):
+ * 0 11 * * * /usr/bin/php /var/www/html/phdtimeoff/cron/daily_pending_reminder.php
  */
 
 /*
@@ -28,16 +30,19 @@ set_time_limit(300);
 require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/EmailService.php';
+require_once __DIR__ . '/../classes/Holiday.php';
 
-$logDir = __DIR__ . '/../logs';
+// Private log directory: logs/ inside the webroot is served as static files by
+// production nginx, and these logs carry faculty addresses.
+$logDir = rtrim(LOG_DIR, '/');
 if (!is_dir($logDir)) {
-    mkdir($logDir, 0775, true);
+    @mkdir($logDir, 0770, true);
 }
 if (!is_writable($logDir)) {
-    @chmod($logDir, 0775);
+    @chmod($logDir, 0770);
     if (!is_writable($logDir)) {
         $logDir = sys_get_temp_dir();
-        echo "[WARNING] logs/ directory not writable, logging to $logDir\n";
+        echo "[WARNING] " . LOG_DIR . " not writable, logging to $logDir\n";
     }
 }
 $logFile = $logDir . '/cron_pending_reminder_' . date('Y-m-d') . '.log';
@@ -53,6 +58,15 @@ cronLog("===== Starting Daily Pending Leave Reminder =====");
 
 try {
     $db = getDBConnection();
+
+    // Working days only, by Holiday's calendar (the same as the month-end
+    // jobs): Mon-Fri, minus holidays, plus any weekend day declared working.
+    $today = new DateTime();
+    if (!(new Holiday($db))->isWorkingDay($today->format('Y-m-d'))) {
+        cronLog("Today (" . $today->format('Y-m-d l') . ") is not a working day. Exiting.");
+        exit(0);
+    }
+
     $emailService = new EmailService();
 
     // Idempotency: skip if already run today

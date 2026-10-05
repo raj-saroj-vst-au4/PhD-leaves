@@ -8,6 +8,7 @@ just crash against them. Explicit SQL keeps the write paths honest.
 from __future__ import annotations
 
 import json
+import queue
 from contextlib import contextmanager
 from typing import Any, Iterable
 
@@ -16,8 +17,17 @@ from pymysql.cursors import DictCursor
 
 from .config import get_settings
 
-_pool: list[pymysql.Connection] = []
+# Idle connections, shared by every thread of this worker (FastAPI runs the
+# plain `def` endpoints on a thread pool). A thread-safe LIFO queue, not a bare
+# list: the old `_pool.pop() if _pool else ...` checked and popped in two steps,
+# so two threads could both see one idle connection, and the loser's pop()
+# raised IndexError — the occasional unexplained 500 under load.
 _POOL_MAX = 5
+_pool: "queue.LifoQueue[pymysql.Connection]" = queue.LifoQueue(maxsize=_POOL_MAX)
+
+# Errors after which a connection's protocol state cannot be trusted. Anything
+# else (a duplicate key, a trigger's SIGNAL) leaves it perfectly reusable.
+_BROKEN = (pymysql.err.OperationalError, pymysql.err.InterfaceError)
 
 
 def _new_conn() -> pymysql.Connection:
@@ -47,27 +57,53 @@ def _new_conn() -> pymysql.Connection:
     )
 
 
+def _close_quietly(conn: pymysql.Connection) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 @contextmanager
 def connection():
-    """Borrow a connection, returning it to a small pool on the way out."""
-    conn = _pool.pop() if _pool else _new_conn()
+    """Borrow a connection, returning it to a small pool on the way out.
+
+    Each connection is held by exactly one thread at a time (PyMySQL
+    connections are not thread-safe). A pooled one is pinged first — MySQL
+    drops idle sessions after wait_timeout, and mysqld restarts drop them all —
+    and one that errored at the protocol level is closed, never handed on.
+    """
     try:
-        conn.ping(reconnect=True)
-    except Exception:
+        conn = _pool.get_nowait()
+    except queue.Empty:
         conn = _new_conn()
+    else:
+        try:
+            conn.ping(reconnect=True)       # reconnect re-runs init_command (UTC)
+        except Exception:
+            _close_quietly(conn)
+            conn = _new_conn()
+
+    reusable = True
     try:
         yield conn
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, _BROKEN):
+            reusable = False
         try:
             conn.rollback()
         except Exception:
-            pass
+            reusable = False
         raise
     finally:
-        if len(_pool) < _POOL_MAX:
-            _pool.append(conn)
-        else:
-            conn.close()
+        if reusable and conn.open:
+            try:
+                _pool.put_nowait(conn)
+                conn = None
+            except queue.Full:
+                pass
+        if conn is not None:
+            _close_quietly(conn)
 
 
 def query_all(sql: str, params: Iterable[Any] = ()) -> list[dict]:

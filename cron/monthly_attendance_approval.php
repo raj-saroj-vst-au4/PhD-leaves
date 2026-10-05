@@ -13,12 +13,27 @@
  * stage is skipped (no TA assigned) start at the guide, and those guides are
  * emailed by this job too.
  *
- * Idempotent: att_month_approvals has a unique key per (student, month) and the
- * run is recorded in att_month_approval_runs, so a second execution neither
- * duplicates rows nor re-sends email.
+ * Idempotent: att_month_approvals has a unique key per (student, month), and a
+ * row is emailed only while its notified_at is empty, so a second execution
+ * neither duplicates rows nor re-sends email. A manual catch-up run (explicit
+ * year and month) for a month already opened therefore emails only the faculty
+ * of students opened by THIS run — e.g. one whose guide the office has just
+ * assigned — plus any row whose earlier email failed. It used to email every
+ * faculty member with anything pending, all over again.
  *
- * Crontab (run after the attendance report is generated at 08:00 on the 1st):
- *   30 8 1 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_attendance_approval.php
+ * Every run first retries any sign-off email that failed earlier, for ANY
+ * month (a failed hand-off, a failed re-route notice, a failed first email) —
+ * even when this run's own month is already open and there is nothing else to
+ * do. Before, only a manual run for that same month would ever look at them.
+ *
+ * Dates are IST: config/constants.php sets the timezone for the whole app, so
+ * "previous month" and "not over yet" below agree with the cron schedule and
+ * with the attendance backend's today_ist().
+ *
+ * Crontab (daily; on the 1st it runs after the attendance report at 08:00):
+ *   30 8 * * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_attendance_approval.php
+ * Daily keeps failed-email retries prompt: on any day but the 1st the month is
+ * already open, so a run only retries.
  */
 
 /*
@@ -46,9 +61,11 @@ require_once __DIR__ . '/../classes/AttendanceApproval.php';
 require_once __DIR__ . '/../config/attendance.php';
 
 // ------------------------------------------------------------------ logging ---
-$logDir = __DIR__ . '/../logs';
+// LOG_DIR is outside the web root. The old logs/ directory is inside it, and
+// nginx serves any non-.php file there as static bytes.
+$logDir = rtrim(LOG_DIR, '/');
 if (!is_dir($logDir)) {
-    @mkdir($logDir, 0775, true);
+    @mkdir($logDir, 0770, true);
 }
 if (!@is_writable($logDir)) {
     $logDir = sys_get_temp_dir();
@@ -63,60 +80,33 @@ function cronLog($message)
     echo $line;
 }
 
-/**
- * A short-lived admin ticket for this process.
- *
- * att_ticket() needs a logged-in web session, which a CLI job has not got. The
- * payload format is identical (see config/attendance.php) so the backend's
- * verify_ticket accepts it; uid 0 marks it as the system rather than a person.
- * The call never leaves loopback.
- */
-function att_cron_ticket()
+/** Log what a notifyUnnotified() pass did — by user id, not name/address:
+ *  the log must not become a faculty directory. Ids are enough to trace a
+ *  delivery. */
+function logNotify(array $notify, $prefix = '')
 {
-    $payload = [
-        'uid'   => 0,
-        'role'  => 'admin',
-        'sid'   => null,
-        'name'  => 'cron:attendance-approval',
-        'email' => ADMIN_EMAIL,
-        'exp'   => time() + 300,
-    ];
-    $body = rtrim(strtr(base64_encode(json_encode($payload, JSON_UNESCAPED_SLASHES)), '+/', '-_'), '=');
-    $sig  = rtrim(strtr(base64_encode(hash_hmac('sha256', $body, ATT_SHARED_SECRET, true)), '+/', '-_'), '=');
-    return $body . '.' . $sig;
+    foreach ($notify['emailed'] as $e) {
+        cronLog(sprintf('  %semailed user_id=%d — %d student(s) [%s]',
+            $prefix, $e['faculty_id'], $e['count'], strtoupper($e['role'])));
+    }
+    foreach ($notify['failed'] as $f) {
+        cronLog(sprintf('  %sWARNING: email failed for user_id=%d [%s] — will be retried on the next run',
+            $prefix, $f['faculty_id'], $f['role']));
+    }
+    foreach ($notify['inactive'] as $i) {
+        cronLog(sprintf('  %sWARNING: %d record(s) wait on user_id=%d [%s], who is deactivated — '
+            . 'reassign the student\'s guide/TA in Users', $prefix, $i['count'], $i['faculty_id'],
+            strtoupper($i['role'])));
+    }
 }
 
-/** Ask the attendance backend for the month's computed figures.
- *
- * Deliberately not recomputed in PHP: working days, and "excused = approved
- * leave OR office-excused", already live in the Python report module. Two
- * implementations would eventually disagree, and the sign-off has to match the
- * report the stipend is paid against.
- */
+/** Ask the attendance backend for the month's computed figures — the same
+ *  report the stipend is paid against. The fetch (and the system ticket it
+ *  carries) lives in AttendanceApproval, which also uses it to keep pending
+ *  sign-offs' figures current. */
 function fetchMonthReport($year, $month)
 {
-    $url = rtrim(ATT_BACKEND_URL, '/') . '/api/admin/report/preview?year=' . (int) $year
-         . '&month=' . (int) $month;
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 300,   // a full month of frames is not quick
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . att_cron_ticket()],
-    ]);
-    $body = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-
-    if ($body === false || $status !== 200) {
-        throw new Exception("attendance backend returned HTTP $status" . ($err ? " ($err)" : ''));
-    }
-    $data = json_decode($body, true);
-    if (!is_array($data) || empty($data['rows'])) {
-        throw new Exception('attendance backend returned no student rows');
-    }
-    return $data;
+    return AttendanceApproval::fetchBackendReport($year, $month, 300, 'cron:attendance-approval');
 }
 
 // --------------------------------------------------------------------- run ---
@@ -145,10 +135,13 @@ try {
             exit(1);
         }
         // Refuse a month that has not finished. The report only counts a day as
-        // absent once it has passed, so opening the current month would snapshot
-        // partial figures — every student near 100% on a full-month denominator —
-        // and the unique key would then prevent those frozen numbers from ever
-        // being corrected.
+        // absent once it has passed, so opening the current month would put
+        // partial figures in front of faculty — every student near 100% on a
+        // full-month denominator — and invite them to sign those.
+        // "This month" is the IST month (the app timezone): no UTC offset
+        // arithmetic is needed or wanted here — just after midnight IST on the
+        // 1st, UTC is still on the previous month's last day, and the old
+        // UTC-default PHP would have refused the month that had just ended.
         $firstOfThisMonth = (new DateTime('first day of this month'))->format('Y-m-01');
         $requested = sprintf('%04d-%02d-01', $year, $month);
         if ($requested >= $firstOfThisMonth) {
@@ -164,7 +157,17 @@ try {
 
     $db = getDBConnection();
     $approval = new AttendanceApproval($db);
-    $emailService = new EmailService();
+
+    // 0. Retry earlier notifications that never went out, for every month —
+    //    before the already-run exit below, or they would wait forever: the
+    //    scheduled run only ever opens the previous month.
+    foreach ($approval->periodsWithUnnotified() as [$py, $pm]) {
+        $retry = $approval->notifyUnnotified($py, $pm);
+        if ($retry['emailed'] || $retry['failed'] || $retry['inactive']) {
+            cronLog(sprintf('Retrying un-notified sign-offs for %04d-%02d:', $py, $pm));
+            logNotify($retry);
+        }
+    }
 
     $previous = $approval->alreadyRun($year, $month);
     if ($previous && $argc < 3) {
@@ -189,7 +192,7 @@ try {
     // 2. Open the month (one row per student, routed to TA then guide).
     $opened = $approval->openMonth($year, $month, $report['rows']);
     cronLog("Opened {$opened['created']} student row(s); skipped {$opened['skipped']} "
-          . '(already open, or student not active)');
+          . '(already open, or not routable)');
     // Say WHICH students were left out and why, so the office can act rather
     // than wonder why a name never reached a faculty member.
     if (!empty($opened['unroutable'])) {
@@ -202,27 +205,15 @@ try {
               . implode(', ', $opened['not_yet_joined']));
     }
 
-    // 3. One combined email per faculty member who now has work waiting.
-    $sent = ['ta' => 0, 'guide' => 0];
-    foreach (['ta', 'guide'] as $role) {
-        foreach ($approval->facultyAwaiting($year, $month, $role) as $faculty) {
-            $rows = $approval->rowsForFacultyMonth($faculty['id'], $role, $year, $month);
-            if (!$rows) {
-                continue;
-            }
-            $ok = $emailService->sendAttendanceApprovalRequest($faculty, $role, $label, $rows);
-            // Log by user id, not name/address: this file sits inside the
-            // document root under a predictable name, so it must not become a
-            // faculty directory. Ids are enough to trace a delivery.
-            if ($ok) {
-                $sent[$role]++;
-                cronLog(sprintf('  emailed user_id=%d — %d student(s) [%s]',
-                    (int) $faculty['id'], count($rows), strtoupper($role)));
-            } else {
-                cronLog(sprintf('  WARNING: email failed for user_id=%d [%s]',
-                    (int) $faculty['id'], $role));
-            }
-        }
+    // 3. One combined email per faculty member with rows nobody has told them
+    //    about yet. On the first run that is everyone with work waiting; on a
+    //    catch-up run it is only the students this run opened (and any row
+    //    whose earlier email failed) — not the whole month over again.
+    $notify = $approval->notifyUnnotified($year, $month);
+    $sent = $notify['sent'];
+    logNotify($notify);
+    if (!$notify['emailed'] && !$notify['failed'] && !$notify['inactive']) {
+        cronLog('  nobody new to notify');
     }
     cronLog("Emails sent — TA: {$sent['ta']}, guide (TA-skipped students): {$sent['guide']}");
 

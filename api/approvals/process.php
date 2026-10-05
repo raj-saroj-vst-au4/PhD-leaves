@@ -1,7 +1,8 @@
 <?php
 /**
  * API: Process Approval/Rejection
- * Handles approve/reject actions from Faculty and HOD
+ * Handles approve/reject actions from Faculty and HOD, and approve/reject/cancel
+ * from Admin
  */
 
 require_once __DIR__ . '/../../config/constants.php';
@@ -26,6 +27,15 @@ if (!isset($_POST['csrf_token']) || !verifyCSRFToken($_POST['csrf_token'])) {
     jsonResponse(false, 'CSRF token validation failed', [], 403);
 }
 
+// An admin "logged in as" a faculty member or the HOD could approve, reject or
+// cancel in their name, and the record would show that person's decision.
+// blockIfImpersonating() answers with plain text, which the fetch() callers
+// cannot parse, so the same refusal is given as JSON here.
+if (isImpersonating()) {
+    jsonResponse(false, 'Approval decisions cannot be made while impersonating another user. '
+        . 'Return to your own account first.', [], 403);
+}
+
 $leaveId = (int)($_POST['leave_id'] ?? 0);
 $action = sanitize($_POST['action'] ?? '');
 $role = sanitize($_POST['role'] ?? '');
@@ -44,13 +54,21 @@ if (strlen($remarks) < 5) {
     jsonResponse(false, 'Remarks must be at least 5 characters', [], 400);
 }
 
-try {
-    $userId = getCurrentUserId();
-    $userRole = getCurrentUserRole();
+$userId = getCurrentUserId();
+$userRole = getCurrentUserRole();
 
+// Only an admin may cancel. For anyone else 'cancel' used to fall through to the
+// reject branch and reject the application instead.
+if ($action === 'cancel' && $userRole !== 'admin') {
+    jsonResponse(false, 'Invalid action', [], 400);
+}
+if ($userRole === 'faculty' && !in_array($role, ['guide', 'ta'], true)) {
+    jsonResponse(false, 'Invalid role', [], 400);
+}
+
+try {
     $approval = new Approval();
     $leave = new Leave();
-    $emailService = new EmailService();
 
     // Get leave details
     $leaveDetails = $leave->getById($leaveId);
@@ -64,30 +82,28 @@ try {
         jsonResponse(false, 'Access denied', [], 403);
     }
 
-    $result = false;
-    $message = '';
+    // The decision. Each Approval method locks the row, re-checks the stage and
+    // the approver, and commits before returning; anything it refuses is thrown
+    // and nothing is changed. $notify says which email goes out once it has
+    // committed.
+    $notify = null;
 
-    // Process based on role and action
     if ($userRole === 'faculty') {
         if ($role === 'guide') {
             if ($action === 'approve') {
                 $result = $approval->approveByGuide($leaveId, $userId, $remarks);
-                $message = 'Leave approved successfully as Faculty Guide';
-
-                // Send email to TA Coordinator
-                if ($result) {
-                    $emailService->sendGuideApproval($leaveDetails);
-                }
+                $message = $result['message'] ?? 'Leave approved successfully as Faculty Guide';
+                // Whoever acts next: the TA, or — when the guide is also the TA,
+                // or no TA is assigned — the HOD. Keyed on where the application
+                // actually landed; emailing "the TA" unconditionally sent the
+                // guide their own application back and never told the HOD.
+                $notify = ($result['new_status'] ?? '') === 'pending_ta' ? 'ta' : 'hod';
             } else {
                 $result = $approval->rejectByGuide($leaveId, $userId, $remarks);
                 $message = 'Leave rejected as Faculty Guide';
-
-                // Send rejection email to student
-                if ($result) {
-                    $emailService->sendRejection($leaveDetails, 'guide');
-                }
+                $notify = 'rejected:guide';
             }
-        } elseif ($role === 'ta') {
+        } else {
             if ($action === 'approve') {
                 $noDutyConfirmed = isset($_POST['no_duty_confirmed']) ? 1 : 0;
 
@@ -97,84 +113,74 @@ try {
 
                 $result = $approval->approveByTA($leaveId, $userId, $remarks, $noDutyConfirmed);
                 $message = 'Leave approved successfully as TA Coordinator';
-
-                // Send email to HOD
-                if ($result) {
-                    $emailService->sendTAApproval($leaveDetails);
-                }
+                $notify = 'hod';
             } else {
                 $result = $approval->rejectByTA($leaveId, $userId, $remarks);
                 $message = 'Leave rejected as TA Coordinator';
-
-                // Send rejection email to student
-                if ($result) {
-                    $emailService->sendRejection($leaveDetails, 'ta_coordinator');
-                }
+                $notify = 'rejected:ta_coordinator';
             }
         }
     } elseif ($userRole === 'hod') {
-        $paymentStatus = !empty($_POST['payment_status']) ? sanitize($_POST['payment_status']) : null;
+        $paymentStatus = $_POST['payment_status'] ?? '';
+        $paymentStatus = in_array($paymentStatus, Approval::PAYMENT_STATUSES, true) ? $paymentStatus : null;
 
         if ($action === 'approve') {
-            $result = $approval->approveByHOD($leaveId, $remarks, $paymentStatus);
-            $message = 'Leave approved successfully as HOD';
-
+            $result = $approval->approveByHOD($leaveId, $userId, $remarks, $paymentStatus);
+            $message = $result['message'] ?? 'Leave approved successfully as HOD';
             // Send appropriate email based on whether it needs admin approval
-            if ($result) {
-                $updatedLeave = $leave->getById($leaveId);
-                if ($updatedLeave['status'] === 'pending_admin') {
-                    $emailService->sendAdminNotification($updatedLeave);
-                } else {
-                    $emailService->sendHODApproval($updatedLeave);
-                }
-            }
+            $notify = ($result['new_status'] ?? '') === 'pending_admin' ? 'admin' : 'approved';
         } else {
-            $result = $approval->rejectByHOD($leaveId, $remarks);
+            $result = $approval->rejectByHOD($leaveId, $userId, $remarks);
             $message = 'Leave rejected as HOD';
-
-            // Send rejection email to student
-            if ($result) {
-                $emailService->sendRejection($leaveDetails, 'hod');
-            }
+            $notify = 'rejected:hod';
         }
     } elseif ($userRole === 'admin') {
-        $documentPath = sanitize($_POST['document_path'] ?? '');
-
         if ($action === 'approve') {
-            $result = $approval->approveByAdmin($leaveId, $documentPath, $remarks);
+            // The Dean AP document is the one attached on the pending-approvals
+            // page; a path is never accepted from the request.
+            $result = $approval->approveByAdmin($leaveId, $userId, $remarks);
             $message = 'Leave approved successfully by Admin';
-
-            // Send final approval email to student
-            if ($result) {
-                $updatedLeave = $leave->getById($leaveId);
-                $emailService->sendHODApproval($updatedLeave); // Reuse HOD approval template
-            }
+            $notify = 'approved';
         } elseif ($action === 'cancel') {
-            $result = $approval->cancelByAdmin($leaveId, $remarks);
+            $result = $approval->cancelByAdmin($leaveId, $userId, $remarks);
             $message = 'Leave application cancelled by Admin';
-
-            // Send cancellation email to student with remarks
-            if ($result) {
-                $emailService->sendRejection($leaveDetails, 'admin', $remarks, true);
-            }
+            $notify = 'cancelled';
         } else {
-            $result = $approval->rejectByAdmin($leaveId, $remarks);
+            $result = $approval->rejectByAdmin($leaveId, $userId, $remarks);
             $message = 'Leave rejected by Admin';
-
-            // Send rejection email to student
-            if ($result) {
-                $emailService->sendRejection($leaveDetails, 'admin');
-            }
+            $notify = 'rejected:admin';
         }
     } else {
         jsonResponse(false, 'Invalid user role', [], 403);
     }
 
-    if ($result) {
-        jsonResponse(true, $message, ['leave_id' => $leaveId]);
-    } else {
-        jsonResponse(false, 'Failed to process request', [], 500);
+    // The decision has committed. Email is best-effort from here on: failing the
+    // request now would invite the approver to click again and be told the
+    // application was already processed. The row is re-read so the email carries
+    // what was actually stored — including the remarks just written, which the
+    // pre-decision copy did not have.
+    try {
+        $emailService = new EmailService();
+        $current = $leave->getById($leaveId) ?: $leaveDetails;
+
+        if ($notify === 'ta') {
+            $emailService->sendGuideApproval($current);
+        } elseif ($notify === 'hod') {
+            $emailService->sendTAApproval($current);
+        } elseif ($notify === 'admin') {
+            $emailService->sendAdminNotification($current);
+        } elseif ($notify === 'approved') {
+            $emailService->sendHODApproval($current);
+        } elseif ($notify === 'cancelled') {
+            $emailService->sendRejection($current, 'admin', $remarks, true);
+        } elseif (strpos((string) $notify, 'rejected:') === 0) {
+            $emailService->sendRejection($current, substr($notify, strlen('rejected:')), $remarks);
+        }
+    } catch (Throwable $emailEx) {
+        logError("Approval email failed for leave $leaveId: " . $emailEx->getMessage());
     }
+
+    jsonResponse(true, $message, ['leave_id' => $leaveId]);
 
 } catch (Exception $e) {
     logError("Approval processing error: " . $e->getMessage());

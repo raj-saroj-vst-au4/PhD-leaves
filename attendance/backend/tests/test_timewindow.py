@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Stub pymysql-backed db module before importing timewindow.
-fake_db = types.ModuleType("app.db")
+# In-memory stand-ins for the queries timewindow makes (bound below).
+fake_db = types.ModuleType("fake_db")
 fake_db.STATE = {"windows": {}, "holidays": {}, "overrides": {}, "extensions": {}, "leaves": []}
 
 
@@ -38,7 +38,14 @@ def _query_all(sql, params=()):
 
 fake_db.query_one = _query_one
 fake_db.query_all = _query_all
-sys.modules["app.db"] = fake_db
+
+import app.timewindow as _tw  # noqa: E402
+
+# Bind the fakes on timewindow itself. Replacing sys.modules["app.db"] only
+# worked while this was the sole test file: pytest imports every test module
+# before running any, and the others need the real app.db's names.
+_tw.query_one = _query_one
+_tw.query_all = _query_all
 
 from app.timewindow import IST, resolve_window, working_days_in_month  # noqa: E402
 

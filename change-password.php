@@ -9,16 +9,12 @@ require_once __DIR__ . '/config/constants.php';
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/auth.php';
 
-// Start session if not already started
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+// auth.php has already opened the session with the hardened cookie settings.
+startAppSession();
 
-// Check if user is logged in
-if (!isset($_SESSION['user_id'])) {
-    header('Location: ' . BASE_URL . '/login.php');
-    exit;
-}
+// Full check (idle timeout included) BEFORE the POST handler below: header.php
+// enforces it too, but only after this page has already acted on the form.
+requireLogin();
 
 // Block password changes while impersonating — changing another user's
 // password while wearing their identity would be indistinguishable from
@@ -72,6 +68,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt = $pdo->prepare("UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?");
                     $stmt->execute([$new_password_hash, $_SESSION['user_id']]);
 
+                    // Every OTHER session on this account now fails its password
+                    // fingerprint check and is signed out; keep this one, under a
+                    // fresh session ID.
+                    $_SESSION['pw_fp'] = passwordFingerprint($new_password_hash);
+                    session_regenerate_id(true);
+
                     // Log the password change
                     logSystemAction(
                         $_SESSION['user_id'],
@@ -99,71 +101,76 @@ $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 $pageTitle = 'Change Password';
 include __DIR__ . '/includes/header.php';
 ?>
-
         <div class="max-w-2xl mx-auto">
             <!-- Page Header -->
-            <div class="mb-6">
-                <h1 class="text-3xl font-bold text-gray-900">Change Password</h1>
-                <p class="text-gray-600 mt-2">Update your account password</p>
+            <div class="page-header">
+                <div>
+                    <p class="page-eyebrow">Account</p>
+                    <h1 class="page-title">Change Password</h1>
+                    <p class="page-subtitle">Update your account password</p>
+                </div>
             </div>
 
             <!-- Success Message -->
             <?php if ($success): ?>
-            <div class="bg-green-50 border-l-4 border-green-500 p-4 mb-6">
-                <div class="flex">
-                    <div class="flex-shrink-0">
-                        <i class="fas fa-check-circle text-green-500"></i>
-                    </div>
-                    <div class="ml-3">
-                        <p class="text-sm text-green-700"><?php echo htmlspecialchars($success); ?></p>
-                    </div>
-                </div>
+            <div class="alert alert-success mb-6" role="status">
+                <i class="fas fa-check-circle mt-0.5"></i>
+                <p><?php echo htmlspecialchars($success); ?></p>
             </div>
             <?php endif; ?>
 
             <!-- Error Messages -->
             <?php if (!empty($errors)): ?>
-            <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6">
-                <div class="flex">
-                    <div class="flex-shrink-0">
-                        <i class="fas fa-exclamation-circle text-red-500"></i>
-                    </div>
-                    <div class="ml-3">
-                        <h3 class="text-sm font-medium text-red-800">Please fix the following errors:</h3>
-                        <ul class="mt-2 text-sm text-red-700 list-disc list-inside">
-                            <?php foreach ($errors as $error): ?>
-                                <li><?php echo htmlspecialchars($error); ?></li>
-                            <?php endforeach; ?>
-                        </ul>
-                    </div>
+            <div class="alert alert-error mb-6" role="alert">
+                <i class="fas fa-exclamation-circle mt-0.5"></i>
+                <div>
+                    <p class="font-semibold">Please fix the following errors:</p>
+                    <ul class="mt-1.5 list-disc space-y-0.5 pl-5">
+                        <?php foreach ($errors as $error): ?>
+                            <li><?php echo htmlspecialchars($error); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
                 </div>
             </div>
             <?php endif; ?>
 
             <!-- Change Password Form -->
-            <div class="bg-white shadow-md rounded-lg overflow-hidden">
-                <div class="px-6 py-8">
-                    <form method="POST" action="" id="changePasswordForm">
-                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+            <div class="card">
+                <div class="card-header justify-start">
+                    <span class="icon-chip chip-brand"><i class="fas fa-key"></i></span>
+                    <div>
+                        <h2 class="card-title">Set a new password</h2>
+                        <p class="card-subtitle">You stay signed in here; other sessions on your account are signed out.</p>
+                    </div>
+                </div>
+                <form method="POST" action="" id="changePasswordForm">
+                    <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
 
+                    <div class="card-body space-y-5">
                         <!-- Current Password -->
-                        <div class="mb-6">
-                            <label for="current_password" class="block text-sm font-medium text-gray-700 mb-2">
-                                Current Password <span class="text-red-500">*</span>
+                        <div>
+                            <label for="current_password" class="form-label">
+                                Current Password <span class="text-rose-500">*</span>
                             </label>
                             <div class="relative">
+                                <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
+                                    <i class="fas fa-lock"></i>
+                                </span>
                                 <input
                                     type="password"
                                     id="current_password"
                                     name="current_password"
                                     required
-                                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-10"
+                                    autocomplete="current-password"
+                                    class="form-input pl-10 pr-12"
                                     placeholder="Enter your current password"
                                 >
                                 <button
                                     type="button"
                                     onclick="togglePassword('current_password')"
-                                    class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                                    class="btn-icon absolute right-1.5 top-1/2 -translate-y-1/2"
+                                    title="Show or hide password"
+                                    aria-label="Show or hide password"
                                 >
                                     <i class="fas fa-eye" id="current_password_icon"></i>
                                 </button>
@@ -171,52 +178,62 @@ include __DIR__ . '/includes/header.php';
                         </div>
 
                         <!-- New Password -->
-                        <div class="mb-6">
-                            <label for="new_password" class="block text-sm font-medium text-gray-700 mb-2">
-                                New Password <span class="text-red-500">*</span>
+                        <div>
+                            <label for="new_password" class="form-label">
+                                New Password <span class="text-rose-500">*</span>
                             </label>
                             <div class="relative">
+                                <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
+                                    <i class="fas fa-lock"></i>
+                                </span>
                                 <input
                                     type="password"
                                     id="new_password"
                                     name="new_password"
                                     required
                                     minlength="8"
-                                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-10"
-                                    placeholder="Enter new password (min 8 characters)"
+                                    autocomplete="new-password"
+                                    class="form-input pl-10 pr-12"
+                                    placeholder="Enter a new password"
                                 >
                                 <button
                                     type="button"
                                     onclick="togglePassword('new_password')"
-                                    class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                                    class="btn-icon absolute right-1.5 top-1/2 -translate-y-1/2"
+                                    title="Show or hide password"
+                                    aria-label="Show or hide password"
                                 >
                                     <i class="fas fa-eye" id="new_password_icon"></i>
                                 </button>
                             </div>
-                            <p class="mt-2 text-sm text-gray-500">
-                                <i class="fas fa-info-circle"></i> Password must be at least 8 characters long
-                            </p>
+                            <p class="form-help">Password must be at least 8 characters long</p>
                         </div>
 
                         <!-- Confirm Password -->
-                        <div class="mb-6">
-                            <label for="confirm_password" class="block text-sm font-medium text-gray-700 mb-2">
-                                Confirm New Password <span class="text-red-500">*</span>
+                        <div>
+                            <label for="confirm_password" class="form-label">
+                                Confirm New Password <span class="text-rose-500">*</span>
                             </label>
                             <div class="relative">
+                                <span class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
+                                    <i class="fas fa-lock"></i>
+                                </span>
                                 <input
                                     type="password"
                                     id="confirm_password"
                                     name="confirm_password"
                                     required
                                     minlength="8"
-                                    class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent pr-10"
+                                    autocomplete="new-password"
+                                    class="form-input pl-10 pr-12"
                                     placeholder="Re-enter new password"
                                 >
                                 <button
                                     type="button"
                                     onclick="togglePassword('confirm_password')"
-                                    class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                                    class="btn-icon absolute right-1.5 top-1/2 -translate-y-1/2"
+                                    title="Show or hide password"
+                                    aria-label="Show or hide password"
                                 >
                                     <i class="fas fa-eye" id="confirm_password_icon"></i>
                                 </button>
@@ -224,49 +241,53 @@ include __DIR__ . '/includes/header.php';
                         </div>
 
                         <!-- Password Strength Indicator -->
-                        <div class="mb-6">
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-sm font-medium text-gray-700">Password Strength</span>
+                        <div class="rounded-xl border border-gray-200 bg-gray-50/70 p-4">
+                            <div class="mb-2 flex items-center justify-between">
+                                <span class="text-sm font-medium text-gray-700">Password strength</span>
                                 <span id="strength_text" class="text-sm text-gray-500">Not evaluated</span>
                             </div>
-                            <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
+                            <div class="h-1.5 overflow-hidden rounded-full bg-gray-200">
                                 <div id="strength_bar" class="h-full w-0 transition-all duration-300"></div>
                             </div>
+                            <ul class="mt-4 grid gap-2 text-sm sm:grid-cols-2" id="strength_checklist">
+                                <li class="flex items-center gap-2 text-gray-500" data-check="length"><i class="fas fa-check-circle text-gray-300"></i>At least 8 characters</li>
+                                <li class="flex items-center gap-2 text-gray-500" data-check="case"><i class="fas fa-check-circle text-gray-300"></i>Upper and lower case</li>
+                                <li class="flex items-center gap-2 text-gray-500" data-check="number"><i class="fas fa-check-circle text-gray-300"></i>A number</li>
+                                <li class="flex items-center gap-2 text-gray-500" data-check="symbol"><i class="fas fa-check-circle text-gray-300"></i>A symbol</li>
+                            </ul>
                         </div>
+                    </div>
 
-                        <!-- Buttons -->
-                        <div class="flex items-center justify-between pt-4 border-t border-gray-200">
-                            <a
-                                href="<?php echo BASE_URL . '/' . $_SESSION['role']; ?>/dashboard.php"
-                                class="text-gray-600 hover:text-gray-900 font-medium"
-                            >
-                                <i class="fas fa-arrow-left mr-2"></i>Cancel
-                            </a>
-                            <button
-                                type="submit"
-                                class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition duration-150 ease-in-out"
-                            >
-                                <i class="fas fa-key mr-2"></i>Change Password
-                            </button>
-                        </div>
-                    </form>
-                </div>
+                    <!-- Buttons -->
+                    <div class="card-footer flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
+                        <a
+                            href="<?php echo sanitize(getRoleHomePage(getCurrentUserRole())); ?>"
+                            class="btn btn-secondary"
+                        >
+                            Cancel
+                        </a>
+                        <button
+                            type="submit"
+                            class="btn btn-primary"
+                        >
+                            <i class="fas fa-key"></i>Change Password
+                        </button>
+                    </div>
+                </form>
             </div>
 
             <!-- Security Tips -->
-            <div class="mt-6 bg-blue-50 border-l-4 border-blue-500 p-4">
-                <div class="flex">
-                    <div class="flex-shrink-0">
-                        <i class="fas fa-shield-alt text-blue-500"></i>
-                    </div>
-                    <div class="ml-3">
-                        <h3 class="text-sm font-medium text-blue-800">Password Security Tips</h3>
-                        <ul class="mt-2 text-sm text-blue-700 list-disc list-inside space-y-1">
-                            <li>Use a mix of uppercase, lowercase, numbers, and special characters</li>
-                            <li>Avoid using personal information or common words</li>
-                            <li>Don't reuse passwords from other accounts</li>
-                            <li>Change your password regularly</li>
-                            <li>Never share your password with anyone</li>
+            <div class="card card-body mt-6">
+                <div class="flex items-start gap-4">
+                    <span class="icon-chip-sm chip-emerald"><i class="fas fa-shield-alt"></i></span>
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-900">Password Security Tips</h3>
+                        <ul class="mt-3 space-y-2 text-sm text-gray-600">
+                            <li class="flex items-start gap-2"><i class="fas fa-check mt-1 text-xs text-emerald-500"></i>Use a mix of uppercase, lowercase, numbers, and special characters</li>
+                            <li class="flex items-start gap-2"><i class="fas fa-check mt-1 text-xs text-emerald-500"></i>Avoid using personal information or common words</li>
+                            <li class="flex items-start gap-2"><i class="fas fa-check mt-1 text-xs text-emerald-500"></i>Don't reuse passwords from other accounts</li>
+                            <li class="flex items-start gap-2"><i class="fas fa-check mt-1 text-xs text-emerald-500"></i>Change your password regularly</li>
+                            <li class="flex items-start gap-2"><i class="fas fa-check mt-1 text-xs text-emerald-500"></i>Never share your password with anyone</li>
                         </ul>
                     </div>
                 </div>
@@ -332,6 +353,22 @@ include __DIR__ . '/includes/header.php';
             strengthBar.className = 'h-full transition-all duration-300 ' + strengthColor;
             strengthText.textContent = strengthLabel;
             strengthText.className = 'text-sm font-medium ' + strengthColor.replace('bg-', 'text-');
+
+            // Tick off the checklist under the meter (same tests as the score above).
+            const checks = {
+                length: password.length >= 8,
+                case: /[a-z]/.test(password) && /[A-Z]/.test(password),
+                number: /[0-9]/.test(password),
+                symbol: /[^a-zA-Z0-9]/.test(password)
+            };
+            document.querySelectorAll('#strength_checklist [data-check]').forEach(function(item) {
+                const met = checks[item.dataset.check];
+                item.classList.toggle('text-emerald-700', met);
+                item.classList.toggle('text-gray-500', !met);
+                const mark = item.querySelector('i');
+                mark.classList.toggle('text-emerald-500', met);
+                mark.classList.toggle('text-gray-300', !met);
+            });
         });
 
         // Confirm password match validation

@@ -208,13 +208,16 @@
     }
   }
 
-  /** Where the head should get to. For a turn, either side counts, so both are
-   *  drawn — the student picks whichever is comfortable. */
-  function drawTargets(r, g, isTurn) {
+  /** Where the head should get to. For a first turn either side counts, so
+   *  both are drawn — the student picks whichever is comfortable. An 'other'
+   *  step (`side` = +1/-1) must go the opposite way to the previous turn, so
+   *  only that side's circle is drawn. */
+  function drawTargets(r, g, isTurn, side) {
     const { ctx } = r;
-    const spots = isTurn
-      ? [poseToXY(g, -(YAW_TURN_MIN + 6), 0), poseToXY(g, YAW_TURN_MIN + 6, 0)]
-      : [poseToXY(g, 0, 0)];
+    const reach = YAW_TURN_MIN + 6;
+    const spots = !isTurn ? [poseToXY(g, 0, 0)]
+      : side ? [poseToXY(g, side * reach, 0)]
+      : [poseToXY(g, -reach, 0), poseToXY(g, reach, 0)];
     ctx.lineWidth = 4;
     ctx.setLineDash([6, 5]);
     ctx.strokeStyle = '#facc15';
@@ -239,10 +242,18 @@
 
   function wait(ms) { return new Promise((res) => setTimeout(res, ms)); }
 
-  // --- marking: centre + the challenged turn(s), captured live -------------
+  // --- marking: the server's random pose sequence, captured live -----------
+  //
+  // Steps: 'centre', 'turn' (either side) and 'other' (the side opposite the
+  // previous turn). The server checks each step in that step's OWN frames —
+  // exactly `perStep` of them, in order — so frames are only taken while the
+  // asked-for pose is actually held. "Opposite" is judged by comparing signs
+  // within the burst, on both sides, so it does not depend on which way either
+  // model counts yaw.
 
   async function runMark(opts) {
-    const { video, grab, challenge, prompts, stepEl, msgEl, isCancelled } = opts;
+    const { video, grab, challenge, prompts, stepEl, msgEl, isCancelled, onStep } = opts;
+    const perStep = opts.perStep || 2;
     if (!(await waitForVideo(video))) throw new Error('FACE_GUIDE_UNAVAILABLE');
     const r = makeRing(video);
     const g = ringGeom(r);
@@ -258,14 +269,18 @@
     drawTargets(r, ringGeom(r), false);
     if (msgEl) msgEl.textContent = 'Looking for your face…';
 
+    let lastSide = 0;                          // sign of yaw at the previous turn
     try {
-      for (const pose of challenge) {
+      for (const [stepNo, pose] of challenge.entries()) {
         const isTurn = pose !== 'centre';
+        const side = pose === 'other' ? -lastSide : 0;   // 0 = either side will do
+        if (onStep) onStep(stepNo + 1, challenge.length);
         if (stepEl) stepEl.textContent = prompts[pose] || pose;
         let held = 0;
         // Never loop forever: if the pose is not reached in time, hand back to
-        // the blind fallback capture rather than trapping the student.
-        const stepDeadline = Date.now() + 30000;
+        // the blind fallback capture rather than trapping the student. 20 s a
+        // step keeps a four-step sequence inside the challenge's 2-minute life.
+        const stepDeadline = Date.now() + 20000;
 
         for (;;) {
           if (isCancelled && isCancelled()) throw new Error('cancelled');
@@ -278,7 +293,7 @@
             if (!sawFaceEver && noFaceReads >= MAX_NO_FACE_READS) {
               throw new Error('FACE_GUIDE_UNAVAILABLE');
             }
-            drawTargets(r, g, isTurn);
+            drawTargets(r, g, isTurn, side);
             if (msgEl) msgEl.textContent = 'Center your face in the circle';
             await wait(90);
             continue;
@@ -286,28 +301,37 @@
           sawFaceEver = true;
 
           const xy = poseToXY(g, p.yaw, 0);
-          // Side-agnostic: a turn either way satisfies the server's 'turn' step.
+          // A first turn may go either way; 'other' must go the other way.
+          const turned = Math.abs(p.yaw) >= YAW_TURN_MIN;
+          const wrongSide = side !== 0 && turned && Math.sign(p.yaw) !== side;
           const matched = isTurn
-            ? Math.abs(p.yaw) >= YAW_TURN_MIN
+            ? turned && !wrongSide
             : Math.abs(p.yaw) <= YAW_CENTRE_MAX;
           const tooSmall = p.faceRatio < MIN_FACE_RATIO;
 
-          drawTargets(r, g, isTurn);
+          drawTargets(r, g, isTurn, side);
           drawPointer(r, g, xy.x, xy.y, matched && !tooSmall);
 
           if (msgEl) {
             msgEl.textContent = tooSmall ? 'Move a little closer'
               : matched ? 'Hold still…'
-              : isTurn ? 'Turn until the dot reaches a circle'
+              : wrongSide ? 'Other way — turn to the OTHER side'
+              : isTurn ? 'Turn until the dot reaches the circle'
               : 'Look straight ahead';
           }
 
           if (matched && !tooSmall) {
             held++;
             if (held >= 2) {                 // stable for two reads → capture
-              frames.push(await grab());
-              await wait(120);
-              frames.push(await grab());     // a second, a beat later (server likes ≥1 clean)
+              // Exactly perStep frames, a beat apart, while the pose is held:
+              // the server wants every usable frame of a step in that pose,
+              // and refuses two byte-identical frames — 200 ms is several
+              // camera frames even at a low-light 10 fps.
+              for (let k = 0; k < perStep; k++) {
+                if (k) await wait(200);
+                frames.push(await grab());
+              }
+              if (isTurn) lastSide = Math.sign(p.yaw);
               break;
             }
           } else {

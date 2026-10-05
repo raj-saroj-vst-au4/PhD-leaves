@@ -13,8 +13,10 @@
  *       -> leave_applications.status = 'pending_routing'   (held, not routed)
  *       -> one pending request per student (uk_one_pending)
  *              |
- *   admin approves -> students.faculty_guide_id / ta_coordinator_id updated
- *                     held leaves released into the normal chain
+ *   admin approves -> the field(s) the student asked to change are updated
+ *                     on students.faculty_guide_id / ta_coordinator_id;
+ *                     held leaves released into the normal chain;
+ *                     pending attendance sign-offs re-routed
  *              |
  *   admin rejects  -> roster untouched; held leaves released anyway, under the
  *                     EXISTING guide/TA
@@ -28,6 +30,7 @@
  */
 
 require_once __DIR__ . '/Leave.php';
+require_once __DIR__ . '/AttendanceApproval.php';
 
 class GuideTAChange
 {
@@ -74,9 +77,11 @@ class GuideTAChange
      * @param int|null $guideId   requested faculty guide (users.id) or null
      * @param int|null $taId      requested TA coordinator (users.id) or null
      * @param string   $reason    the student's justification
+     * @param int|null $actorUserId users.id of whoever is raising it — the
+     *                  logged-in user by default (the student, from apply_leave)
      * @throws Exception when the request is invalid or one is already open
      */
-    public function create($studentId, $guideId, $taId, $reason)
+    public function create($studentId, $guideId, $taId, $reason, $actorUserId = null)
     {
         $studentId = (int) $studentId;
         $guideId = $guideId ? (int) $guideId : null;
@@ -148,9 +153,17 @@ class GuideTAChange
         }
 
         $id = (int) $this->db->lastInsertId();
-        logSystemAction($current['user_id'], 'guide_ta_change_requested', 'students',
-            "Requested guide=" . ($guideId ?: 'none') . ", ta=" . ($taId ?: 'none')
-            . " (request ID $id)");
+        // Recorded against whoever actually raised it (the student, or an admin
+        // "logged in as" them — logSystemAction names the admin then), and
+        // naming the student either way, so the entry stands on its own.
+        if ($actorUserId === null && function_exists('isLoggedIn') && isLoggedIn()) {
+            $actorUserId = getCurrentUserId();
+        }
+        logSystemAction($actorUserId ?: $current['user_id'], 'guide_ta_change_requested', 'students',
+            sprintf('Guide/TA change request ID %d for student_id %d (user #%d): guide %s -> %s, ta %s -> %s',
+                $id, $studentId, (int) $current['user_id'],
+                $current['faculty_guide_id'] ?: 'none', $guideId ?: 'none',
+                $current['ta_coordinator_id'] ?: 'none', $taId ?: 'none'));
 
         return $id;
     }
@@ -166,7 +179,9 @@ class GuideTAChange
                     cg.name AS current_guide_name, ct.name AS current_ta_name,
                     rg.name AS requested_guide_name, rg.email AS requested_guide_email,
                     rt.name AS requested_ta_name,
-                    d.name  AS decided_by_name
+                    d.name  AS decided_by_name,
+                    s.faculty_guide_id AS live_guide_id, s.ta_coordinator_id AS live_ta_id,
+                    lg.name AS live_guide_name, lt.name AS live_ta_name
              FROM guide_ta_change_requests r
              JOIN students s ON s.id = r.student_id
              JOIN users u    ON u.id = s.user_id
@@ -175,6 +190,8 @@ class GuideTAChange
              LEFT JOIN users rg ON rg.id = r.requested_guide_id
              LEFT JOIN users rt ON rt.id = r.requested_ta_id
              LEFT JOIN users d  ON d.id  = r.decided_by
+             LEFT JOIN users lg ON lg.id = s.faculty_guide_id
+             LEFT JOIN users lt ON lt.id = s.ta_coordinator_id
              WHERE r.id = :id"
         );
         $stmt->execute([':id' => (int) $id]);
@@ -195,6 +212,8 @@ class GuideTAChange
                        cg.name AS current_guide_name, ct.name AS current_ta_name,
                        rg.name AS requested_guide_name, rt.name AS requested_ta_name,
                        d.name  AS decided_by_name,
+                       s.faculty_guide_id AS live_guide_id, s.ta_coordinator_id AS live_ta_id,
+                       lg.name AS live_guide_name, lt.name AS live_ta_name,
                        (SELECT COUNT(*) FROM leave_applications la
                          WHERE la.routing_request_id = r.id) AS held_leaves
                 FROM guide_ta_change_requests r
@@ -204,7 +223,9 @@ class GuideTAChange
                 LEFT JOIN users ct ON ct.id = r.current_ta_id
                 LEFT JOIN users rg ON rg.id = r.requested_guide_id
                 LEFT JOIN users rt ON rt.id = r.requested_ta_id
-                LEFT JOIN users d  ON d.id  = r.decided_by";
+                LEFT JOIN users d  ON d.id  = r.decided_by
+                LEFT JOIN users lg ON lg.id = s.faculty_guide_id
+                LEFT JOIN users lt ON lt.id = s.ta_coordinator_id";
         $params = [];
         if ($status !== '') {
             $sql .= " WHERE r.status = :status";
@@ -237,14 +258,38 @@ class GuideTAChange
     /**
      * Record the admin's decision and release whatever it was holding.
      *
-     * @param string $decision 'approve' | 'reject'
-     * @return array {ok, message, request, released[], cancelled[]}
+     * Approving applies ONLY what the student asked to change. The request
+     * carries the full requested state, and approving used to write both
+     * fields wholesale — so a request raised last week, approved today, quietly
+     * undid any roster edit the office had made in between (e.g. a TA
+     * reassigned for the new term, when the student had only asked about their
+     * guide). The field the student did not ask about is now left as it is.
+     *
+     * And when the roster no longer matches what the request was based on
+     * (current_guide_id / current_ta_id, snapshotted when it was raised), the
+     * admin is shown the difference and must confirm before anything is
+     * written: the student's reason was written about an arrangement that has
+     * since moved. The confirmation names the roster the admin was SHOWN
+     * (seen_roster in the refusal); if it has moved again by the time they
+     * click, they are shown the new state and asked again, rather than a
+     * blanket "yes" approving whatever the roster happens to be by then.
+     *
+     * @param string     $decision  'approve' | 'reject'
+     * @param array|null $confirmed ['faculty_guide_id' => ?int, 'ta_coordinator_id' => ?int]:
+     *                              the live roster the admin saw and confirmed
+     * @return array {ok, needs_confirmation?, message?, seen_roster?, drift[], request,
+     *                released[], cancelled[], applied[], signoff_notify[], leave_routing}
      */
-    public function decide($id, $adminUserId, $decision, $adminRemarks = null)
+    public function decide($id, $adminUserId, $decision, $adminRemarks = null, ?array $confirmed = null)
     {
         if (!in_array($decision, ['approve', 'reject'], true)) {
             throw new Exception('Invalid decision.');
         }
+
+        $applied = [];
+        $drift = [];
+        $signoffNotify = [];
+        $leaveRouting = ['moved' => [], 'returned' => [], 'stranded' => [], 'notify' => []];
 
         $this->db->beginTransaction();
         try {
@@ -265,27 +310,97 @@ class GuideTAChange
             $studentId = (int) $req['student_id'];
             $approved = $decision === 'approve';
 
+            // Lock the roster row as well, so an edit in admin/users.php cannot
+            // land between the comparison below and the write.
+            $live = $this->currentRouting($studentId, true);
+            if (!$live) {
+                throw new Exception('Student record not found.');
+            }
+            $student = $this->studentLabel($studentId);
+
+            $fields = [
+                'faculty_guide_id'  => ['Faculty Guide', 'current_guide_id', 'requested_guide_id'],
+                'ta_coordinator_id' => ['TA Coordinator', 'current_ta_id', 'requested_ta_id'],
+            ];
+            $asked = [];
+            foreach ($fields as $col => [$label, $curCol, $reqCol]) {
+                $was = $req[$curCol] ? (int) $req[$curCol] : null;
+                $want = $req[$reqCol] ? (int) $req[$reqCol] : null;
+                $now = $live[$col] ? (int) $live[$col] : null;
+                if ($was !== $want) {
+                    $asked[$col] = $want;
+                }
+                if ($now !== $was) {
+                    $drift[$col] = ['label' => $label, 'was' => $was, 'now' => $now,
+                                    'asked' => $was !== $want, 'want' => $want];
+                }
+            }
+
             if ($approved) {
+                $seen = [
+                    'faculty_guide_id' => $live['faculty_guide_id'] ? (int) $live['faculty_guide_id'] : null,
+                    'ta_coordinator_id' => $live['ta_coordinator_id'] ? (int) $live['ta_coordinator_id'] : null,
+                ];
+                $norm = function ($v) { return $v === null || $v === '' || (int) $v === 0 ? null : (int) $v; };
+                $confirmedMatches = $confirmed !== null
+                    && $norm($confirmed['faculty_guide_id'] ?? null) === $seen['faculty_guide_id']
+                    && $norm($confirmed['ta_coordinator_id'] ?? null) === $seen['ta_coordinator_id'];
+                if ($drift && !$confirmedMatches) {
+                    $this->db->rollBack();
+                    return [
+                        'ok' => false,
+                        'needs_confirmation' => true,
+                        'drift' => $drift,
+                        'seen_roster' => $seen,
+                        'message' => ($confirmed !== null
+                                ? "The roster changed again after you confirmed. Please check it once more.\n\n" : '')
+                            . $this->driftMessage($drift),
+                    ];
+                }
+
                 // Re-validate at decision time. The requested faculty may have
                 // been deactivated in the days since the student asked, and
-                // writing an inactive id would break every routing query.
-                foreach (['Faculty Guide' => $req['requested_guide_id'],
-                          'TA Coordinator' => $req['requested_ta_id']] as $label => $fid) {
-                    if ($fid !== null && !$this->isSelectableFaculty((int) $fid)) {
-                        throw new Exception("The requested $label is no longer an active faculty "
+                // writing an inactive id would break every routing query. Only
+                // the fields actually being changed matter.
+                foreach ($asked as $col => $fid) {
+                    if ($fid !== null && !$this->isSelectableFaculty($fid)) {
+                        throw new Exception("The requested {$fields[$col][0]} is no longer an active faculty "
                             . 'member. Reject this request and ask the student to raise a new one.');
                     }
                 }
 
-                $upd = $this->db->prepare(
-                    "UPDATE students SET faculty_guide_id = :guide, ta_coordinator_id = :ta
-                     WHERE id = :sid"
-                );
-                $upd->execute([
-                    ':guide' => $req['requested_guide_id'],
-                    ':ta' => $req['requested_ta_id'],
-                    ':sid' => $studentId,
-                ]);
+                foreach ($asked as $col => $fid) {
+                    if (($live[$col] ? (int) $live[$col] : null) !== $fid) {
+                        $applied[$col] = $fid;
+                    }
+                }
+                if ($applied) {
+                    $sets = implode(', ', array_map(function ($c) { return "$c = :$c"; }, array_keys($applied)));
+                    $upd = $this->db->prepare("UPDATE students SET $sets WHERE id = :sid");
+                    $params = [':sid' => $studentId];
+                    foreach ($applied as $c => $v) {
+                        $params[":$c"] = $v;
+                    }
+                    $upd->execute($params);
+
+                    // Monthly attendance sign-offs snapshot their routing when
+                    // the month opens. Any still waiting at a stage whose person
+                    // just changed would otherwise sit with the old guide/TA
+                    // forever. Same transaction: the roster and the sign-offs
+                    // move together or not at all. (Leave applications read the
+                    // guide/TA from students at query time; the edge cases that
+                    // strands are handled just below.)
+                    $reroute = (new AttendanceApproval($this->db))
+                        ->rerouteForStudent($studentId, (int) $adminUserId);
+                    $signoffNotify = $reroute['notify'];
+
+                    // In-flight leave applications waiting on a TA who no longer
+                    // exists (or on a guide now also the TA) move on to the HOD.
+                    require_once __DIR__ . '/Approval.php';
+                    $leaveRouting = (new Approval($this->db))->resettleAfterRoutingChange(
+                        $studentId, (int) $adminUserId,
+                        $live['faculty_guide_id'] ?? null, $live['ta_coordinator_id'] ?? null);
+                }
             }
 
             $upd = $this->db->prepare(
@@ -302,16 +417,34 @@ class GuideTAChange
                 ':id' => (int) $id,
             ]);
 
-            $release = $this->releaseHeldLeaves((int) $id, $studentId);
+            $release = $this->releaseHeldLeaves((int) $id, $studentId, (int) $adminUserId);
 
+            // Recorded against the admin who decided, naming the student and
+            // saying exactly what was written — not what was asked for.
+            $fmt = function ($v) { return $v === null ? 'none' : (int) $v; };
+            $what = [];
+            foreach ($applied as $col => $v) {
+                $what[] = sprintf('%s %s -> %s', $col === 'faculty_guide_id' ? 'guide' : 'ta',
+                    $fmt($live[$col] ? (int) $live[$col] : null), $fmt($v));
+            }
+            $desc = sprintf('Guide/TA change request ID %d for %s %s. ', $id, $student,
+                    $approved ? 'approved' : 'rejected')
+                . ($approved ? ($what ? 'Applied: ' . implode(', ', $what) . '. '
+                                      : 'Nothing to apply (already in effect). ') : '')
+                . ($approved && $drift ? 'Roster had changed since the request (admin confirmed): '
+                    . implode(', ', array_map(function ($d) use ($fmt) {
+                        return $d['label'] . ' ' . $fmt($d['was']) . ' -> ' . $fmt($d['now']);
+                    }, $drift)) . '. ' : '')
+                . 'Released ' . count($release['released']) . ' leave(s), cancelled '
+                . count($release['cancelled']) . '.';
             logSystemAction($adminUserId, 'guide_ta_change_' . ($approved ? 'approved' : 'rejected'),
-                'students', "Request ID $id for student_id $studentId; released "
-                . count($release['released']) . ' leave(s), cancelled '
-                . count($release['cancelled']));
+                'students', $desc);
 
             $this->db->commit();
         } catch (Exception $e) {
-            $this->db->rollBack();
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
             throw $e;
         }
 
@@ -320,7 +453,63 @@ class GuideTAChange
             'request' => $this->getById($id),
             'released' => $release['released'],
             'cancelled' => $release['cancelled'],
+            'applied' => $applied,
+            'drift' => $drift,
+            'signoff_notify' => $signoffNotify,
+            'leave_routing' => $leaveRouting,
         ];
+    }
+
+    /** "Name (roll, student_id N, user #U)" for audit entries. */
+    private function studentLabel($studentId)
+    {
+        $stmt = $this->db->prepare(
+            "SELECT s.id, s.roll_number, u.id AS user_id, u.name
+             FROM students s JOIN users u ON u.id = s.user_id WHERE s.id = :sid"
+        );
+        $stmt->execute([':sid' => (int) $studentId]);
+        $r = $stmt->fetch();
+        return $r
+            ? sprintf("student '%s' (%s, student_id %d, user #%d)", $r['name'], $r['roll_number'],
+                (int) $r['id'], (int) $r['user_id'])
+            : 'student_id ' . (int) $studentId;
+    }
+
+    /** What moved since the request, and what approving will now do — for the confirm prompt. */
+    private function driftMessage(array $drift)
+    {
+        $ids = [];
+        foreach ($drift as $d) {
+            $ids[] = $d['was'];
+            $ids[] = $d['now'];
+            $ids[] = $d['want'];
+        }
+        $names = [];
+        $ids = array_values(array_unique(array_filter($ids)));
+        if ($ids) {
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            $stmt = $this->db->prepare("SELECT id, name FROM users WHERE id IN ($in)");
+            $stmt->execute($ids);
+            foreach ($stmt->fetchAll() as $u) {
+                // Stored HTML-escaped; this text goes to a confirm() box.
+                $names[(int) $u['id']] = html_entity_decode($u['name'], ENT_QUOTES, 'UTF-8');
+            }
+        }
+        $n = function ($id) use ($names) {
+            return $id === null ? 'nobody' : ($names[$id] ?? "user #$id");
+        };
+
+        $lines = [];
+        foreach ($drift as $col => $d) {
+            $line = "{$d['label']}: the request was based on {$n($d['was'])}, but it is now {$n($d['now'])}.";
+            $line .= $d['asked']
+                ? " Approving will change it to {$n($d['want'])}, replacing that edit."
+                : ' The student did not ask to change this, so approving leaves it as it is now.';
+            $lines[] = $line;
+        }
+        return "The office has changed this student's roster since the request was made.\n\n"
+            . implode("\n", $lines)
+            . "\n\nApprove anyway?";
     }
 
     /**
@@ -334,8 +523,13 @@ class GuideTAChange
      * cancelled with an explicit reason rather than left at pending_routing,
      * where no further event would ever reach them and the student would watch
      * a leave sit "pending" forever.
+     *
+     * Each application gets its own audit entry, against the admin whose
+     * decision moved it, in the leave's approval history (module 'approvals',
+     * "Ref ID: <leave id>") — before, nothing recorded who released or
+     * cancelled it.
      */
-    private function releaseHeldLeaves($requestId, $studentId)
+    private function releaseHeldLeaves($requestId, $studentId, $actorUserId)
     {
         $routing = $this->currentRouting($studentId);
         $hasGuide = !empty($routing['faculty_guide_id']);
@@ -362,6 +556,10 @@ class GuideTAChange
             foreach ($ids as $lid) {
                 $upd->execute([':id' => (int) $lid]);
                 $released[] = (int) $lid;
+                logSystemAction($actorUserId, 'leave_released_from_routing', 'approvals', sprintf(
+                    'Released to the faculty guide (user #%d) by the decision on guide/TA change request '
+                    . 'ID %d, student_id %d (Ref ID: %d)',
+                    (int) $routing['faculty_guide_id'], $requestId, $studentId, (int) $lid));
             }
         } else {
             $upd = $this->db->prepare(
@@ -376,6 +574,9 @@ class GuideTAChange
             foreach ($ids as $lid) {
                 $upd->execute([':id' => (int) $lid, ':note' => $note]);
                 $cancelled[] = (int) $lid;
+                logSystemAction($actorUserId, 'leave_cancelled_no_guide', 'approvals', sprintf(
+                    'Cancelled: no Faculty Guide after the decision on guide/TA change request ID %d, '
+                    . 'student_id %d (Ref ID: %d)', $requestId, $studentId, (int) $lid));
             }
         }
 

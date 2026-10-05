@@ -10,10 +10,8 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/functions.php';
 
-// Start session if not already started
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+// auth.php has already opened the session (hardened cookie flags); no-op here.
+startAppSession();
 
 /*
  * Enforce the session HERE, before a single byte of HTML is emitted.
@@ -136,14 +134,52 @@ $navGroupIsCurrent = function ($group) use ($navIsCurrent) {
     <!-- CSRF Token Meta Tag -->
     <meta name="csrf-token" content="<?php echo $csrfToken; ?>">
 </head>
-<body class="bg-gray-50">
+<body class="bg-gray-50 text-gray-800">
+<?php
+/*
+ * Navigation for every role, as data. One definition drives BOTH the desktop
+ * bar and the mobile list, so the two cannot drift apart (they used to be
+ * hand-duplicated per role). Admin keeps its grouped menus ($adminNav above).
+ */
+$roleNav = [
+    'student' => [
+        ['label' => 'Dashboard',   'icon' => 'fa-home',          'url' => '/student/dashboard.php'],
+        ['label' => 'Apply Leave', 'icon' => 'fa-paper-plane',   'url' => '/student/apply_leave.php'],
+        ['label' => 'History',     'icon' => 'fa-history',       'url' => '/student/leave_history.php'],
+        ['label' => 'Holidays',    'icon' => 'fa-calendar-alt',  'url' => '/student/holidays.php'],
+        ['label' => 'Attendance',  'icon' => 'fa-user-check',    'url' => '/student/attendance.php'],
+    ],
+    'faculty' => [
+        ['label' => 'Dashboard',   'icon' => 'fa-home',          'url' => '/faculty/dashboard.php'],
+        ['label' => 'Approvals',   'icon' => 'fa-check-circle',  'url' => '/faculty/pending_approvals.php'],
+        ['label' => 'Attendance',  'icon' => 'fa-user-check',    'url' => '/faculty/attendance_approvals.php'],
+        ['label' => 'My Students', 'icon' => 'fa-user-graduate', 'url' => '/faculty/my_students.php'],
+    ],
+    'hod' => [
+        ['label' => 'Dashboard',   'icon' => 'fa-home',          'url' => '/hod/dashboard.php'],
+        ['label' => 'Approvals',   'icon' => 'fa-check-circle',  'url' => '/hod/pending_approvals.php'],
+        ['label' => 'Leaves',      'icon' => 'fa-list',          'url' => '/hod/all_leaves.php'],
+        ['label' => 'Holidays',    'icon' => 'fa-calendar-alt',  'url' => '/hod/holidays.php'],
+        ['label' => 'Analytics',   'icon' => 'fa-chart-bar',     'url' => '/hod/analytics.php'],
+    ],
+    'admin' => $adminNav,
+];
+$navItems = $roleNav[$userRole] ?? [];
+
+// Initials for the avatar: first letter of the first two words of the name.
+$userInitials = '';
+foreach (array_slice(preg_split('/\s+/', trim(html_entity_decode((string) $userName, ENT_QUOTES, 'UTF-8'))), 0, 2) as $part) {
+    $userInitials .= mb_strtoupper(mb_substr($part, 0, 1));
+}
+$userInitials = $userInitials !== '' ? $userInitials : '?';
+?>
 
     <?php if (isImpersonating()): ?>
     <!-- Impersonation Banner -->
-    <div class="bg-yellow-500 text-black border-b-2 border-yellow-700 relative z-50">
+    <div class="relative z-50 bg-amber-400 text-amber-950">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div class="text-sm flex items-center">
-                <i class="fas fa-user-secret mr-2"></i>
+            <div class="text-sm flex items-center gap-2">
+                <i class="fas fa-user-secret"></i>
                 <span>
                     Admin <strong><?php echo sanitize(getImpersonatorName() ?? 'unknown'); ?></strong>
                     is impersonating <strong><?php echo sanitize(getCurrentUserName() ?? ''); ?></strong>
@@ -152,8 +188,8 @@ $navGroupIsCurrent = function ($group) use ($navIsCurrent) {
             </div>
             <form method="POST" action="<?php echo BASE_URL; ?>/stop_impersonation.php" class="inline">
                 <input type="hidden" name="csrf_token" value="<?php echo $csrfToken; ?>">
-                <button type="submit" class="px-3 py-1 bg-black text-yellow-400 rounded text-sm font-medium hover:bg-gray-800 transition-colors">
-                    <i class="fas fa-sign-out-alt mr-1"></i>Return to admin
+                <button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-amber-950 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-black transition-colors">
+                    <i class="fas fa-sign-out-alt"></i>Return to admin
                 </button>
             </form>
         </div>
@@ -161,279 +197,185 @@ $navGroupIsCurrent = function ($group) use ($navIsCurrent) {
     <?php endif; ?>
 
     <!-- Navigation Bar -->
-    <nav class="bg-blue-600 shadow-lg relative z-50">
+    <nav class="app-navbar sticky top-0 z-40 border-b border-gray-200/80">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between h-16">
+            <div class="flex h-16 items-center justify-between gap-4">
                 <!-- Logo and Brand -->
-                <div class="flex items-center">
-                    <div class="flex-shrink-0 flex items-center">
-                        <a href="<?php echo BASE_URL; ?>/index.php" class="text-white text-xl font-bold">
-                            <i class="fas fa-graduation-cap mr-2"></i>
-                            PhD Time-Off Portal
-                        </a>
-                    </div>
-                </div>
+                <a href="<?php echo BASE_URL; ?>/index.php" class="flex shrink-0 items-center gap-3 rounded-lg">
+                    <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-sm">
+                        <i class="fas fa-graduation-cap"></i>
+                    </span>
+                    <span class="leading-tight">
+                        <span class="block text-sm font-semibold text-gray-900">PhD Time-Off</span>
+                        <span class="hidden sm:block text-xs text-gray-500">SJM School of Management</span>
+                    </span>
+                </a>
 
                 <?php if (isLoggedIn()): ?>
                 <!-- Desktop Navigation -->
-                <div class="hidden md:flex md:items-center md:space-x-4">
-                    <?php if ($userRole === 'student'): ?>
-                        <a href="<?php echo BASE_URL; ?>/student/dashboard.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-home mr-1"></i> Dashboard
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-paper-plane mr-1"></i> Apply Leave
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/student/leave_history.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-history mr-1"></i> History
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/student/holidays.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-calendar-alt mr-1"></i> Holidays
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/student/attendance.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-user-check mr-1"></i> Attendance
-                        </a>
-                    <?php elseif ($userRole === 'faculty'): ?>
-                        <a href="<?php echo BASE_URL; ?>/faculty/dashboard.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-home mr-1"></i> Dashboard
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/faculty/pending_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-check-circle mr-1"></i> Approvals
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/faculty/attendance_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-user-check mr-1"></i> Attendance
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/faculty/my_students.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-user-graduate mr-1"></i> My Students
-                        </a>
-                    <?php elseif ($userRole === 'hod'): ?>
-                        <a href="<?php echo BASE_URL; ?>/hod/dashboard.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-home mr-1"></i> Dashboard
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/hod/pending_approvals.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-check-circle mr-1"></i> Approvals
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/hod/all_leaves.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-list mr-1"></i> Leaves
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/hod/holidays.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-calendar-alt mr-1"></i> Holidays
-                        </a>
-                        <a href="<?php echo BASE_URL; ?>/hod/analytics.php" class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium">
-                            <i class="fas fa-chart-bar mr-1"></i> Analytics
-                        </a>
-                    <?php elseif ($userRole === 'admin'): ?>
-                        <?php foreach ($adminNav as $gi => $group): ?>
-                            <?php if (!isset($group['items'])): ?>
-                                <a href="<?php echo BASE_URL . $group['url']; ?>"
-                                   class="nav-link text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium <?php echo $navGroupIsCurrent($group) ? 'bg-blue-700' : ''; ?>">
-                                    <i class="fas <?php echo $group['icon']; ?> mr-1"></i> <?php echo $group['label']; ?>
-                                </a>
-                            <?php else: ?>
-                                <div class="relative">
-                                    <button type="button"
-                                            class="nav-menu-btn flex items-center text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium <?php echo $navGroupIsCurrent($group) ? 'bg-blue-700' : ''; ?>"
-                                            data-nav-menu="nav-menu-<?php echo $gi; ?>"
-                                            aria-expanded="false" aria-haspopup="true">
-                                        <i class="fas <?php echo $group['icon']; ?> mr-1"></i>
-                                        <span><?php echo $group['label']; ?></span>
-                                        <i class="fas fa-chevron-down ml-2 text-xs"></i>
-                                    </button>
-                                    <div id="nav-menu-<?php echo $gi; ?>" role="menu"
-                                         class="nav-menu hidden absolute left-0 z-50 mt-2 w-56 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 py-1">
-                                        <?php foreach ($group['items'] as $item): ?>
-                                            <a href="<?php echo BASE_URL . $item['url']; ?>"
-                                               <?php echo !empty($item['blank']) ? 'target="_blank" rel="noopener"' : ''; ?>
-                                               role="menuitem"
-                                               class="block px-4 py-2 text-sm hover:bg-gray-100 <?php echo $navIsCurrent($item['url']) ? 'bg-blue-50 text-blue-800 font-semibold' : 'text-gray-700'; ?>">
-                                                <i class="fas <?php echo $item['icon']; ?> mr-2 text-gray-400"></i><?php echo $item['label']; ?>
-                                                <?php if (!empty($item['blank'])): ?>
-                                                    <i class="fas fa-external-link-alt ml-1 text-xs text-gray-400"></i>
-                                                <?php endif; ?>
-                                            </a>
-                                        <?php endforeach; ?>
-                                    </div>
+                <div class="hidden lg:flex lg:flex-1 lg:items-center lg:justify-center lg:gap-1">
+                    <?php foreach ($navItems as $gi => $group): ?>
+                        <?php if (!isset($group['items'])): ?>
+                            <a href="<?php echo BASE_URL . $group['url']; ?>"
+                               class="nav-pill <?php echo $navGroupIsCurrent($group) ? 'nav-pill-active' : ''; ?>"
+                               <?php echo $navGroupIsCurrent($group) ? 'aria-current="page"' : ''; ?>>
+                                <i class="fas <?php echo $group['icon']; ?> text-xs opacity-80"></i> <?php echo $group['label']; ?>
+                            </a>
+                        <?php else: ?>
+                            <div class="relative">
+                                <button type="button"
+                                        class="nav-menu-btn nav-pill <?php echo $navGroupIsCurrent($group) ? 'nav-pill-active' : ''; ?>"
+                                        data-nav-menu="nav-menu-<?php echo $gi; ?>"
+                                        aria-expanded="false" aria-haspopup="true">
+                                    <i class="fas <?php echo $group['icon']; ?> text-xs opacity-80"></i>
+                                    <span><?php echo $group['label']; ?></span>
+                                    <i class="fas fa-chevron-down text-[10px] opacity-60"></i>
+                                </button>
+                                <div id="nav-menu-<?php echo $gi; ?>" role="menu"
+                                     class="nav-menu menu-panel hidden absolute left-0 z-50 mt-2 w-60 animate-fade-in">
+                                    <?php foreach ($group['items'] as $item): ?>
+                                        <a href="<?php echo BASE_URL . $item['url']; ?>"
+                                           <?php echo !empty($item['blank']) ? 'target="_blank" rel="noopener"' : ''; ?>
+                                           role="menuitem"
+                                           class="menu-item <?php echo $navIsCurrent($item['url']) ? 'menu-item-active' : ''; ?>">
+                                            <i class="fas <?php echo $item['icon']; ?> w-4 text-center text-gray-400"></i>
+                                            <span class="flex-1"><?php echo $item['label']; ?></span>
+                                            <?php if (!empty($item['blank'])): ?>
+                                                <i class="fas fa-external-link-alt text-[10px] text-gray-400"></i>
+                                            <?php endif; ?>
+                                        </a>
+                                    <?php endforeach; ?>
                                 </div>
-                            <?php endif; ?>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
+                            </div>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </div>
 
+                <div class="flex items-center gap-2">
                     <!-- User Profile Dropdown -->
-                    <div class="relative ml-3">
-                        <button type="button" class="flex items-center text-white hover:bg-blue-700 px-3 py-2 rounded-md text-sm font-medium" id="user-menu-button" aria-expanded="false" aria-haspopup="true">
-                            <i class="fas fa-user-circle mr-2"></i>
-                            <span><?php echo sanitize($userName); ?></span>
-                            <i class="fas fa-chevron-down ml-2"></i>
+                    <div class="relative hidden lg:block">
+                        <button type="button" class="flex items-center gap-2.5 rounded-full py-1 pl-1 pr-3 text-sm transition-colors hover:bg-gray-100" id="user-menu-button" aria-expanded="false" aria-haspopup="true">
+                            <span class="avatar"><?php echo sanitize($userInitials); ?></span>
+                            <span class="hidden xl:block text-left leading-tight">
+                                <span class="block max-w-[10rem] truncate font-medium text-gray-900"><?php echo sanitize($userName); ?></span>
+                                <span class="block text-xs text-gray-500"><?php echo sanitize(ucfirst($userRole)); ?></span>
+                            </span>
+                            <i class="fas fa-chevron-down text-[10px] text-gray-400"></i>
                         </button>
 
                         <!-- Dropdown menu -->
-                        <div class="hidden absolute right-0 z-50 mt-2 w-56 origin-top-right rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none" id="user-menu" role="menu" aria-orientation="vertical" aria-labelledby="user-menu-button" tabindex="-1">
-                            <div class="px-4 py-3 border-b">
-                                <p class="text-sm text-gray-900 font-semibold"><?php echo sanitize($userName); ?></p>
-                                <p class="text-xs text-gray-500"><?php echo sanitize($userEmail); ?></p>
-                                <p class="text-xs text-gray-500 mt-1">
-                                    <span class="inline-block px-2 py-1 bg-blue-100 text-blue-800 rounded">
-                                        <?php echo ucfirst($userRole); ?>
-                                    </span>
-                                </p>
+                        <div class="hidden menu-panel absolute right-0 z-50 mt-2 w-64 origin-top-right animate-fade-in focus:outline-none" id="user-menu" role="menu" aria-orientation="vertical" aria-labelledby="user-menu-button" tabindex="-1">
+                            <div class="flex items-center gap-3 px-3 py-3">
+                                <span class="avatar h-10 w-10 text-sm"><?php echo sanitize($userInitials); ?></span>
+                                <div class="min-w-0">
+                                    <p class="truncate text-sm font-semibold text-gray-900"><?php echo sanitize($userName); ?></p>
+                                    <p class="truncate text-xs text-gray-500"><?php echo sanitize($userEmail); ?></p>
+                                </div>
                             </div>
-                            <div class="py-1">
-                                <a href="<?php echo BASE_URL; ?>/profile.php" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">
-                                    <i class="fas fa-user mr-2"></i> My Profile
-                                </a>
-                                <a href="<?php echo BASE_URL; ?>/change-password.php" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">
-                                    <i class="fas fa-key mr-2"></i> Change Password
-                                </a>
-                                <a href="<?php echo BASE_URL; ?>/logout.php" class="block px-4 py-2 text-sm text-red-600 hover:bg-gray-100" role="menuitem">
-                                    <i class="fas fa-sign-out-alt mr-2"></i> Logout
-                                </a>
+                            <div class="px-3 pb-2">
+                                <span class="badge badge-brand"><?php echo sanitize(ucfirst($userRole)); ?></span>
                             </div>
+                            <div class="my-1 border-t border-gray-100"></div>
+                            <a href="<?php echo BASE_URL; ?>/profile.php" class="menu-item" role="menuitem">
+                                <i class="fas fa-user w-4 text-center text-gray-400"></i> My Profile
+                            </a>
+                            <a href="<?php echo BASE_URL; ?>/change-password.php" class="menu-item" role="menuitem">
+                                <i class="fas fa-key w-4 text-center text-gray-400"></i> Change Password
+                            </a>
+                            <div class="my-1 border-t border-gray-100"></div>
+                            <a href="<?php echo BASE_URL; ?>/logout.php" class="menu-item text-rose-600 hover:bg-rose-50 hover:text-rose-700" role="menuitem">
+                                <i class="fas fa-sign-out-alt w-4 text-center"></i> Sign out
+                            </a>
                         </div>
                     </div>
-                </div>
 
-                <!-- Mobile menu button -->
-                <div class="flex items-center md:hidden">
-                    <button type="button" class="inline-flex items-center justify-center p-2 rounded-md text-white hover:bg-blue-700 focus:outline-none" id="mobile-menu-button">
+                    <!-- Mobile menu button -->
+                    <button type="button" class="btn-icon h-10 w-10 lg:hidden" id="mobile-menu-button" aria-controls="mobile-menu">
                         <span class="sr-only">Open main menu</span>
-                        <i class="fas fa-bars text-xl"></i>
+                        <i class="fas fa-bars text-lg"></i>
                     </button>
                 </div>
                 <?php else: ?>
                 <!-- Not logged in -->
-                <div class="flex items-center">
-                    <a href="<?php echo BASE_URL; ?>/login.php" class="text-white hover:bg-blue-700 px-4 py-2 rounded-md text-sm font-medium">
-                        <i class="fas fa-sign-in-alt mr-1"></i> Login
-                    </a>
-                </div>
+                <a href="<?php echo BASE_URL; ?>/login.php" class="btn btn-primary">
+                    <i class="fas fa-sign-in-alt"></i> Sign in
+                </a>
                 <?php endif; ?>
             </div>
         </div>
 
         <?php if (isLoggedIn()): ?>
         <!-- Mobile menu -->
-        <div class="hidden md:hidden" id="mobile-menu">
-            <div class="px-2 pt-2 pb-3 space-y-1">
-                <?php if ($userRole === 'student'): ?>
-                    <a href="<?php echo BASE_URL; ?>/student/dashboard.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-home mr-2"></i> Dashboard
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-paper-plane mr-2"></i> Apply Leave
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/student/leave_history.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-history mr-2"></i> History
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/student/holidays.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-calendar-alt mr-2"></i> Holidays
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/student/attendance.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-user-check mr-2"></i> Attendance
-                    </a>
-                <?php elseif ($userRole === 'faculty'): ?>
-                    <a href="<?php echo BASE_URL; ?>/faculty/dashboard.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-home mr-2"></i> Dashboard
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/faculty/pending_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-check-circle mr-2"></i> Approvals
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/faculty/attendance_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-user-check mr-2"></i> Attendance
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/faculty/my_students.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-user-graduate mr-2"></i> My Students
-                    </a>
-                <?php elseif ($userRole === 'hod'): ?>
-                    <a href="<?php echo BASE_URL; ?>/hod/dashboard.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-home mr-2"></i> Dashboard
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/hod/pending_approvals.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-check-circle mr-2"></i> Approvals
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/hod/all_leaves.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-list mr-2"></i> Leaves
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/hod/holidays.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-calendar-alt mr-2"></i> Holidays
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/hod/analytics.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-chart-bar mr-2"></i> Analytics
-                    </a>
-                <?php elseif ($userRole === 'admin'): ?>
-                    <?php foreach ($adminNav as $group): ?>
-                        <?php if (!isset($group['items'])): ?>
-                            <a href="<?php echo BASE_URL . $group['url']; ?>"
-                               class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium <?php echo $navGroupIsCurrent($group) ? 'bg-blue-700' : ''; ?>">
-                                <i class="fas <?php echo $group['icon']; ?> mr-2"></i> <?php echo $group['label']; ?>
-                            </a>
-                        <?php else: ?>
-                            <?php /* A heading plus indented links: no collapsing, so there is no
-                                     JS to fail on a phone and every destination stays one tap away. */ ?>
-                            <p class="px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-blue-200">
-                                <i class="fas <?php echo $group['icon']; ?> mr-2"></i><?php echo $group['label']; ?>
-                            </p>
-                            <?php foreach ($group['items'] as $item): ?>
-                                <a href="<?php echo BASE_URL . $item['url']; ?>"
-                                   <?php echo !empty($item['blank']) ? 'target="_blank" rel="noopener"' : ''; ?>
-                                   style="padding-left:2.25rem"
-                                   class="block text-white hover:bg-blue-700 pr-3 py-2 rounded-md text-base font-medium <?php echo $navIsCurrent($item['url']) ? 'bg-blue-700' : ''; ?>">
-                                    <i class="fas <?php echo $item['icon']; ?> mr-2 text-blue-200"></i><?php echo $item['label']; ?>
-                                </a>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-
-                <!-- User info in mobile menu -->
-                <div class="border-t border-blue-500 pt-4 pb-3">
-                    <div class="px-3 mb-3">
-                        <p class="text-sm text-white font-semibold"><?php echo sanitize($userName); ?></p>
-                        <p class="text-xs text-blue-200"><?php echo sanitize($userEmail); ?></p>
-                        <p class="text-xs text-blue-200 mt-1">
-                            <span class="inline-block px-2 py-1 bg-blue-500 rounded">
-                                <?php echo ucfirst($userRole); ?>
-                            </span>
+        <div class="hidden border-t border-gray-200 bg-white lg:hidden" id="mobile-menu">
+            <div class="space-y-0.5 px-3 pt-3 pb-3">
+                <?php foreach ($navItems as $group): ?>
+                    <?php if (!isset($group['items'])): ?>
+                        <a href="<?php echo BASE_URL . $group['url']; ?>"
+                           class="menu-item py-2.5 text-base <?php echo $navGroupIsCurrent($group) ? 'menu-item-active' : ''; ?>">
+                            <i class="fas <?php echo $group['icon']; ?> w-5 text-center text-gray-400"></i> <?php echo $group['label']; ?>
+                        </a>
+                    <?php else: ?>
+                        <?php /* A heading plus indented links: no collapsing, so there is no
+                                 JS to fail on a phone and every destination stays one tap away. */ ?>
+                        <p class="px-3 pt-4 pb-1 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                            <?php echo $group['label']; ?>
                         </p>
+                        <?php foreach ($group['items'] as $item): ?>
+                            <a href="<?php echo BASE_URL . $item['url']; ?>"
+                               <?php echo !empty($item['blank']) ? 'target="_blank" rel="noopener"' : ''; ?>
+                               class="menu-item py-2.5 text-base <?php echo $navIsCurrent($item['url']) ? 'menu-item-active' : ''; ?>">
+                                <i class="fas <?php echo $item['icon']; ?> w-5 text-center text-gray-400"></i><?php echo $item['label']; ?>
+                            </a>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                <?php endforeach; ?>
+            </div>
+
+            <!-- User info in mobile menu -->
+            <div class="border-t border-gray-200 px-3 pt-4 pb-4">
+                <div class="mb-3 flex items-center gap-3 px-3">
+                    <span class="avatar h-10 w-10 text-sm"><?php echo sanitize($userInitials); ?></span>
+                    <div class="min-w-0">
+                        <p class="truncate text-sm font-semibold text-gray-900"><?php echo sanitize($userName); ?></p>
+                        <p class="truncate text-xs text-gray-500"><?php echo sanitize($userEmail); ?> · <?php echo sanitize(ucfirst($userRole)); ?></p>
                     </div>
-                    <a href="<?php echo BASE_URL; ?>/profile.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-user mr-2"></i> My Profile
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/change-password.php" class="block text-white hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-key mr-2"></i> Change Password
-                    </a>
-                    <a href="<?php echo BASE_URL; ?>/logout.php" class="block text-red-200 hover:bg-blue-700 px-3 py-2 rounded-md text-base font-medium">
-                        <i class="fas fa-sign-out-alt mr-2"></i> Logout
-                    </a>
                 </div>
+                <a href="<?php echo BASE_URL; ?>/profile.php" class="menu-item py-2.5 text-base">
+                    <i class="fas fa-user w-5 text-center text-gray-400"></i> My Profile
+                </a>
+                <a href="<?php echo BASE_URL; ?>/change-password.php" class="menu-item py-2.5 text-base">
+                    <i class="fas fa-key w-5 text-center text-gray-400"></i> Change Password
+                </a>
+                <a href="<?php echo BASE_URL; ?>/logout.php" class="menu-item py-2.5 text-base text-rose-600 hover:bg-rose-50 hover:text-rose-700">
+                    <i class="fas fa-sign-out-alt w-5 text-center"></i> Sign out
+                </a>
             </div>
         </div>
         <?php endif; ?>
     </nav>
 
     <!-- Main Content Area -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
 
         <!-- Flash Message Display Area -->
         <div id="flash-message-container">
             <?php
             if ($flash = getFlashMessage()) {
-                $colors = [
-                    'success' => ['bg' => 'bg-green-50', 'border' => 'border-green-200', 'text' => 'text-green-800', 'icon' => 'fa-check-circle'],
-                    'error' => ['bg' => 'bg-red-50', 'border' => 'border-red-200', 'text' => 'text-red-800', 'icon' => 'fa-exclamation-circle'],
-                    'warning' => ['bg' => 'bg-yellow-50', 'border' => 'border-yellow-200', 'text' => 'text-yellow-800', 'icon' => 'fa-exclamation-triangle'],
-                    'info' => ['bg' => 'bg-blue-50', 'border' => 'border-blue-200', 'text' => 'text-blue-800', 'icon' => 'fa-info-circle']
+                $styles = [
+                    'success' => ['alert-success', 'fa-check-circle'],
+                    'error' => ['alert-error', 'fa-exclamation-circle'],
+                    'warning' => ['alert-warning', 'fa-exclamation-triangle'],
+                    'info' => ['alert-info', 'fa-info-circle']
                 ];
 
-                $color = $colors[$flash['type']] ?? $colors['info'];
+                [$alertClass, $alertIcon] = $styles[$flash['type']] ?? $styles['info'];
 
-                echo '<div class="flash-message mb-6 p-4 rounded-lg ' . $color['bg'] . ' border ' . $color['border'] . '" role="alert">';
-                echo '<div class="flex items-center">';
-                echo '<i class="fas ' . $color['icon'] . ' ' . $color['text'] . ' mr-3"></i>';
-                echo '<p class="text-sm ' . $color['text'] . ' flex-1">' . sanitize($flash['message']) . '</p>';
-                echo '<button type="button" class="ml-3 inline-flex text-gray-400 hover:text-gray-600" onclick="this.parentElement.parentElement.remove()">';
+                echo '<div class="flash-message alert ' . $alertClass . ' mb-6 shadow-sm" role="alert">';
+                echo '<i class="fas ' . $alertIcon . ' mt-0.5"></i>';
+                echo '<p class="flex-1">' . sanitize($flash['message']) . '</p>';
+                echo '<button type="button" class="-my-1 -mr-1 rounded-md p-1 opacity-60 hover:opacity-100" aria-label="Dismiss" onclick="this.parentElement.remove()">';
                 echo '<i class="fas fa-times"></i>';
                 echo '</button>';
-                echo '</div>';
                 echo '</div>';
             }
             ?>

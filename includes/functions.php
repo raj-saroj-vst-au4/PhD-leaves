@@ -105,7 +105,7 @@ function getStatusBadge($status) {
     $badges = [
         // Held before the chain starts: the student flagged their guide/TA as
         // wrong, and the office has to settle that before anyone can review.
-        'pending_routing' => '<span class="badge" style="background-color:#c2410c;color:white;"><i class="fas fa-user-slash mr-1 text-xs"></i>Awaiting Guide/TA Change</span>',
+        'pending_routing' => '<span class="badge badge-routing"><i class="fas fa-user-slash mr-1 text-xs"></i>Awaiting Guide/TA Change</span>',
         'pending_guide' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending Guide</span>',
         'pending_ta' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending TA</span>',
         'pending_hod' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending HOD</span>',
@@ -113,7 +113,7 @@ function getStatusBadge($status) {
         'approved' => '<span class="badge badge-approved"><i class="fas fa-check mr-1 text-xs"></i>Approved</span>',
         'rejected' => '<span class="badge badge-rejected"><i class="fas fa-times mr-1 text-xs"></i>Rejected</span>',
         'cancelled' => '<span class="badge badge-cancelled"><i class="fas fa-ban mr-1 text-xs"></i>Cancelled</span>',
-        'combined' => '<span class="badge" style="background-color: #9333ea; color: white;"><i class="fas fa-compress-arrows-alt mr-1 text-xs"></i>Combined</span>',
+        'combined' => '<span class="badge badge-combined"><i class="fas fa-compress-arrows-alt mr-1 text-xs"></i>Combined</span>',
         'pending' => '<span class="badge badge-pending"><i class="fas fa-clock mr-1 text-xs"></i>Pending</span>'
     ];
 
@@ -142,12 +142,12 @@ function getPaymentStatusBadge($status) {
     }
 
     $badges = [
-        'paid' => '<span class="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">Paid</span>',
-        'partially_paid' => '<span class="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">Partially Paid</span>',
-        'unpaid' => '<span class="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800">Unpaid</span>'
+        'paid' => '<span class="badge badge-approved">Paid</span>',
+        'partially_paid' => '<span class="badge badge-pending">Partially Paid</span>',
+        'unpaid' => '<span class="badge badge-rejected">Unpaid</span>'
     ];
 
-    return $badges[$status] ?? $status;
+    return $badges[$status] ?? sanitize($status);
 }
 
 /**
@@ -185,17 +185,18 @@ function hasFlashMessage() {
  */
 function displayFlashMessage() {
     if ($flash = getFlashMessage()) {
-        $colors = [
-            'success' => 'green',
-            'error' => 'red',
-            'warning' => 'yellow',
-            'info' => 'blue'
+        $styles = [
+            'success' => ['alert-success', 'fa-check-circle'],
+            'error' => ['alert-error', 'fa-exclamation-circle'],
+            'warning' => ['alert-warning', 'fa-exclamation-triangle'],
+            'info' => ['alert-info', 'fa-info-circle']
         ];
 
-        $color = $colors[$flash['type']] ?? 'gray';
+        [$class, $icon] = $styles[$flash['type']] ?? $styles['info'];
 
-        echo '<div class="mb-4 p-4 rounded-lg bg-' . $color . '-50 border border-' . $color . '-200" role="alert">';
-        echo '<p class="text-sm text-' . $color . '-800">' . sanitize($flash['message']) . '</p>';
+        echo '<div class="alert ' . $class . ' mb-4" role="alert">';
+        echo '<i class="fas ' . $icon . ' mt-0.5"></i>';
+        echo '<p class="flex-1">' . sanitize($flash['message']) . '</p>';
         echo '</div>';
     }
 }
@@ -317,10 +318,17 @@ function renderPagination($currentPage, $totalPages, $baseUrl) {
 
 /**
  * Upload file securely
+ *
+ * The stored name is random and its extension comes from the verified MIME
+ * type, never from the client: production nginx hands ANY .php file under the
+ * webroot to PHP-FPM, so keeping a client-chosen extension was a code-execution
+ * path. The destination defaults to a private directory that is not web-served.
+ *
+ * @return string the stored file's basename (resolve it with privateFilePath())
  */
-function uploadFile($file, $allowedTypes = ALLOWED_UPLOAD_TYPES, $maxSize = MAX_UPLOAD_SIZE) {
+function uploadFile($file, $allowedTypes = ALLOWED_UPLOAD_TYPES, $maxSize = MAX_UPLOAD_SIZE, $destDir = UPLOAD_DIR) {
     // Check for upload errors
-    if ($file['error'] !== UPLOAD_ERR_OK) {
+    if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK || !is_uploaded_file($file['tmp_name'])) {
         throw new Exception('File upload error');
     }
 
@@ -329,26 +337,69 @@ function uploadFile($file, $allowedTypes = ALLOWED_UPLOAD_TYPES, $maxSize = MAX_
         throw new Exception('File size exceeds maximum allowed (' . ($maxSize / 1048576) . 'MB)');
     }
 
-    // Check MIME type
+    // Check MIME type from the content, not the client's claim
     $finfo = finfo_open(FILEINFO_MIME_TYPE);
     $mimeType = finfo_file($finfo, $file['tmp_name']);
     finfo_close($finfo);
 
-    if (!in_array($mimeType, $allowedTypes)) {
+    $extensions = ['application/pdf' => 'pdf'];
+    if (!in_array($mimeType, $allowedTypes, true) || !isset($extensions[$mimeType])) {
         throw new Exception('Invalid file type. Only PDF files are allowed.');
     }
+    if ($mimeType === 'application/pdf') {
+        $fh = fopen($file['tmp_name'], 'rb');
+        $magic = $fh ? fread($fh, 5) : '';
+        if ($fh) {
+            fclose($fh);
+        }
+        if ($magic !== '%PDF-') {
+            throw new Exception('Invalid file type. Only PDF files are allowed.');
+        }
+    }
 
-    // Generate unique filename
-    $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-    $filename = generateRandomString() . '.' . $extension;
-    $filepath = UPLOAD_DIR . $filename;
+    if (!is_dir($destDir) && !@mkdir($destDir, 0770, true)) {
+        throw new Exception('Failed to save uploaded file');
+    }
+
+    $filename = generateRandomString() . '.' . $extensions[$mimeType];
+    $filepath = rtrim($destDir, '/') . '/' . $filename;
 
     // Move uploaded file
     if (!move_uploaded_file($file['tmp_name'], $filepath)) {
         throw new Exception('Failed to save uploaded file');
     }
+    @chmod($filepath, 0640);
 
     return $filename;
+}
+
+/**
+ * Resolve a stored document reference to its file inside a private directory.
+ *
+ * Accepts both the bare name stored now and the legacy "uploads/medical_documents/x.pdf"
+ * form still held by older rows; only the basename is used, so a stored value
+ * can never walk out of $dir. Returns null if the file is not there.
+ */
+function privateFilePath($dir, $stored) {
+    if ($stored === null || $stored === '') {
+        return null;
+    }
+    $name = basename(str_replace('\\', '/', (string) $stored));
+    if ($name === '' || $name[0] === '.' || !preg_match('/^[A-Za-z0-9._-]+$/', $name)) {
+        return null;
+    }
+    $path = rtrim($dir, '/') . '/' . $name;
+    return is_file($path) ? $path : null;
+}
+
+/**
+ * Delete a stored private document, ignoring references that do not resolve.
+ */
+function deletePrivateFile($dir, $stored) {
+    $path = privateFilePath($dir, $stored);
+    if ($path !== null) {
+        @unlink($path);
+    }
 }
 
 /**
@@ -428,6 +479,13 @@ function dd($data) {
  * @param string $description Description of the action
  */
 function logSystemAction($userId, $action, $module, $description) {
+    // An admin acting through "login as" must never leave a trail that reads as
+    // the impersonated user's own doing: name the real actor on every entry.
+    if (function_exists('isImpersonating') && isImpersonating()) {
+        $description = rtrim((string) $description)
+            . ' [performed by admin #' . (int) getImpersonatorId()
+            . ' (' . getImpersonatorName() . ') while impersonating user #' . (int) getCurrentUserId() . ']';
+    }
     try {
         $pdo = getDBConnection();
         $sql = "INSERT INTO system_logs (user_id, action, module, description, ip_address)
@@ -439,7 +497,8 @@ function logSystemAction($userId, $action, $module, $description) {
             ':action' => $action,
             ':module' => $module,
             ':description' => $description,
-            ':ip_address' => $_SERVER['REMOTE_ADDR'] ?? null
+            // Behind the front proxy REMOTE_ADDR is 10.127.1.21 for everyone.
+            ':ip_address' => (function_exists('getClientIp') ? getClientIp() : null) ?? ($_SERVER['REMOTE_ADDR'] ?? null)
         ]);
     } catch (PDOException $e) {
         // Log to file if database logging fails

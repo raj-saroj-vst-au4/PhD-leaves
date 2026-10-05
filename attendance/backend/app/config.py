@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     det_size: int = 640
     # A face smaller than this fraction of frame width is too far away to judge.
     min_face_ratio: float = 0.18
+    # Concurrent verifications per uvicorn worker (the Dockerfile runs 2). Each
+    # one is already multi-threaded inside ONNX Runtime, so more slots mostly
+    # add contention; the rest queue on the event loop without holding a thread.
+    face_workers: int = 2
+    # How long a request may wait for a slot before it is told to retry. Kept
+    # well inside the PHP forwarder's 120 s curl timeout.
+    face_queue_timeout: float = 30.0
+
+    # --- request limits ---
+    # Whole request body. A marking burst is ~1-2 MB and an enrollment sweep
+    # ~5 MB; anything far beyond that is not a phone camera.
+    max_body_bytes: int = 12 * 1024 * 1024
 
     # --- misc ---
     timezone: str = "Asia/Kolkata"

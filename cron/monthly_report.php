@@ -4,8 +4,9 @@
  * Generates and emails monthly attendance report to admins
  * Runs on last working day of month
  *
- * Crontab entry:
- * 0 17 25-31 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_report.php
+ * Crontab entry (the script itself decides whether today is the day, so the
+ * window only has to contain the last working day of every month):
+ * 0 17 20-31 * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_report.php
  */
 
 /*
@@ -32,9 +33,12 @@ require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../classes/Holiday.php';
 require_once __DIR__ . '/../includes/EmailService.php';
 
-$logDir = __DIR__ . '/../logs';
+// Logs and the report CSV go to the private log directory. They used to be
+// written to logs/ inside the webroot, which production nginx serves as static
+// files: the CSV (every student's leaves and balances) was downloadable.
+$logDir = rtrim(LOG_DIR, '/');
 if (!is_dir($logDir)) {
-    @mkdir($logDir, 0775, true);
+    @mkdir($logDir, 0770, true);
 }
 // Test actual file creation since is_writable() can be unreliable
 $testFile = $logDir . '/.write_test_' . getmypid();
@@ -48,7 +52,7 @@ if ($canWrite) {
         @unlink($testFile);
     } else {
         $logDir = sys_get_temp_dir();
-        echo "[WARNING] logs/ directory not writable, logging to $logDir\n";
+        echo "[WARNING] " . LOG_DIR . " not writable, logging to $logDir\n";
     }
 }
 $logFile = $logDir . '/cron_report_' . date('Y-m-d') . '.log';
@@ -70,28 +74,13 @@ try {
     $emailService = new EmailService();
 
     $today = new DateTime();
-    $currentMonth = $today->format('m');
-    $currentYear = $today->format('Y');
 
-    // Calculate last working day with a safety bound to prevent infinite loop
-    $lastDayOfMonth = new DateTime("last day of $currentYear-$currentMonth");
-    $firstDayOfMonth = new DateTime("$currentYear-$currentMonth-01");
-    $holidays = $holidayClass->getByYear($currentYear);
-    $holidayDates = array_map(function($h) { return $h['holiday_date']; }, $holidays);
-
-    $checkDate = clone $lastDayOfMonth;
-    $lastWorkingDay = null;
-
-    while ($checkDate >= $firstDayOfMonth) {
-        $dayOfWeek = (int)$checkDate->format('N');
-        $dateStr = $checkDate->format('Y-m-d');
-
-        if ($dayOfWeek < 6 && !in_array($dateStr, $holidayDates)) {
-            $lastWorkingDay = clone $checkDate;
-            break;
-        }
-        $checkDate->modify('-1 day');
-    }
+    // Last working day of the month, by Holiday's calendar: Mon-Fri, minus
+    // holidays, plus any weekend day the holidays table declares working. The
+    // old loop put every holidays row in one "holiday" list and never read
+    // is_working_day, so a Saturday declared working was still a day off.
+    $workingDays = $holidayClass->getWorkingDaysInRange($today->format('Y-m-01'), $today->format('Y-m-t'));
+    $lastWorkingDay = empty($workingDays) ? null : new DateTime(end($workingDays));
 
     if (!$lastWorkingDay) {
         cronLog("ERROR: No working day found in this month. Exiting.");
@@ -115,11 +104,26 @@ try {
     $startDate = $today->format('Y-m-01');
     $endDate = $today->format('Y-m-t');
 
-    // Get all leave applications for the month
+    // Every leave application that touches the month. The old filter
+    // (start_date >= 1st AND end_date <= last day) matched only leaves lying
+    // wholly inside the month, so a leave running from the 28th into the next
+    // month appeared in neither month's report.
     $leaves = $leaveClass->getAll([
-        'start_date' => $startDate,
-        'end_date' => $endDate
+        'overlaps_from' => $startDate,
+        'overlaps_to' => $endDate
     ]);
+
+    // 'combined' rows are superseded duplicates: combineLeaves() inserts a new
+    // application spanning the same dates, so counting both doubles the totals.
+    $leaves = array_values(array_filter($leaves, fn($l) => $l['status'] !== 'combined'));
+
+    // Days of each leave that fall inside this month (total_days counts
+    // calendar days, like this).
+    $daysInMonth = function ($leave) use ($startDate, $endDate) {
+        $from = max($leave['start_date'], $startDate);
+        $to = min($leave['end_date'], $endDate);
+        return (new DateTime($from))->diff(new DateTime($to))->days + 1;
+    };
 
     $approvedLeaves = array_filter($leaves, fn($l) => $l['status'] === 'approved');
     $rejectedLeaves = array_filter($leaves, fn($l) => $l['status'] === 'rejected');
@@ -136,7 +140,12 @@ try {
     $reportData['personal_leaves'] = count(array_filter($leaves, fn($l) => $l['leave_type'] === 'personal'));
     $reportData['medical_leaves'] = count(array_filter($leaves, fn($l) => $l['leave_type'] === 'medical'));
     $reportData['academic_leaves'] = count(array_filter($leaves, fn($l) => $l['leave_type'] === 'academic'));
-    $reportData['extended_leaves'] = count(array_filter($leaves, fn($l) => ($l['leave_type'] ?? '') === 'extended'));
+    // "Extended" = the leaves that need Dean AP approval: academic leave longer
+    // than EXTENDED_LEAVE_THRESHOLD days, the same rule Approval uses to route
+    // to pending_admin. It used to test leave_type === 'extended', a type that
+    // does not exist, so the count was always 0.
+    $reportData['extended_leaves'] = count(array_filter($leaves, fn($l) =>
+        $l['leave_type'] === 'academic' && (int) $l['total_days'] > EXTENDED_LEAVE_THRESHOLD));
 
     // Students with negative balances
     $stmt = $db->query("SELECT s.roll_number, u.name, lb.personal_leaves, lb.medical_leaves, lb.academic_leaves
@@ -147,11 +156,12 @@ try {
                         ORDER BY u.name");
     $negativeBalances = $stmt->fetchAll();
 
-    // Total leave days taken
-    $totalDays = array_sum(array_map(fn($l) => $l['total_days'], $approvedLeaves));
+    // Approved leave days taken in this month (a leave spanning months counts
+    // only its days inside this one)
+    $totalDays = array_sum(array_map($daysInMonth, $approvedLeaves));
 
     // Generate CSV report
-    $csvFile = $logDir . '/monthly_report_' . date('Y-m') . '.csv';
+    $csvFile = $logDir . '/monthly_report_' . $today->format('Y-m') . '.csv';
     $fp = @fopen($csvFile, 'w');
 
     if ($fp) {
@@ -162,17 +172,19 @@ try {
         fputcsv($fp, ['Approved', $reportData['approved_applications']]);
         fputcsv($fp, ['Rejected', $reportData['rejected_applications']]);
         fputcsv($fp, ['Pending', $reportData['pending_applications']]);
-        fputcsv($fp, ['Total Leave Days', $totalDays]);
+        fputcsv($fp, ['Approved Leave Days in ' . $today->format('F'), $totalDays]);
         fputcsv($fp, []);
 
         fputcsv($fp, ['By Leave Type']);
         fputcsv($fp, ['Personal', $reportData['personal_leaves']]);
         fputcsv($fp, ['Medical', $reportData['medical_leaves']]);
         fputcsv($fp, ['Academic', $reportData['academic_leaves']]);
+        fputcsv($fp, ['Extended academic (> ' . EXTENDED_LEAVE_THRESHOLD . ' days, Dean AP)', $reportData['extended_leaves']]);
         fputcsv($fp, []);
 
         fputcsv($fp, ['All Leave Applications']);
-        fputcsv($fp, ['Roll Number', 'Student Name', 'Leave Type', 'Start Date', 'End Date', 'Days', 'Status']);
+        fputcsv($fp, ['Roll Number', 'Student Name', 'Leave Type', 'Start Date', 'End Date', 'Days',
+                      'Days in ' . $today->format('F'), 'Status']);
 
         foreach ($leaves as $leave) {
             fputcsv($fp, [
@@ -182,6 +194,7 @@ try {
                 $leave['start_date'],
                 $leave['end_date'],
                 $leave['total_days'],
+                $daysInMonth($leave),
                 str_replace('_', ' ', ucfirst($leave['status']))
             ]);
         }
@@ -204,6 +217,7 @@ try {
         }
 
         fclose($fp);
+        @chmod($csvFile, 0640);
         cronLog("CSV report generated: $csvFile");
 
         // Clean up old CSV reports (keep last 12 months)

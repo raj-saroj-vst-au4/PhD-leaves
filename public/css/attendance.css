@@ -1,237 +1,21 @@
 /* ---------------------------------------------------------------------------
- * Utilities the attendance pages need that the vendored Tailwind build lacks.
+ * Attendance pages — only what Tailwind utilities cannot express.
  *
- * public/vendor/tailwind/tailwind.min.css is a PURGED build (38 KB, generated
- * April 2026). It only contains classes that existed in the project when it was
- * generated, so anything newer silently renders as nothing — e.g. the whole
- * amber palette is absent, which made the enrollment button (white text on
- * bg-amber-600) invisible.
+ * This file used to back-fill colours and layout utilities missing from the
+ * old purged Tailwind build. The build is now regenerated with a safelist, so
+ * every page here is plain utilities + the shared components in
+ * public/vendor/tailwind/input.css. What remains is genuinely custom: the
+ * mirrored camera preview and pose-guide canvas, the capture frame geometry,
+ * hide-when-empty rules that need :has(), the JS-driven tab states, and the
+ * full-screen code display.
  *
- * Values below are copied from Tailwind's defaults, so if the vendored build is
- * ever regenerated these simply become redundant rather than conflicting.
+ * Loaded by student/attendance.php, admin/attendance.php and
+ * admin/attendance_display.php.
  * ------------------------------------------------------------------------- */
 
-/* --- amber palette (entirely absent from the vendored build) --------------- */
-.bg-amber-50   { background-color: #fffbeb; }
-.bg-amber-100  { background-color: #fef3c7; }
-.bg-amber-500  { background-color: #f59e0b; }
-.bg-amber-600  { background-color: #d97706; }
-.hover\:bg-amber-700:hover { background-color: #b45309; }
-.border-amber-200 { border-color: #fde68a; }
-.text-amber-600 { color: #d97706; }
-.text-amber-700 { color: #b45309; }
-.text-amber-800 { color: #92400e; }
-.text-amber-900 { color: #78350f; }
-
-/* --- other colours used by the capture overlay and tabs -------------------- */
-.bg-gray-700 { background-color: #374151; }
-.hover\:bg-gray-600:hover { background-color: #4b5563; }
-.border-blue-600 { border-color: #2563eb; }
-.bg-black.bg-opacity-95 { background-color: rgba(0, 0, 0, .95); }
-.bg-black.bg-opacity-80 { background-color: rgba(0, 0, 0, .80); }
-
-/* --- camera overlay geometry ---------------------------------------------- */
-.object-cover      { object-fit: cover; }
-.rounded-2xl       { border-radius: 1rem; }
-.border-4          { border-width: 4px; }
-.border-white      { border-color: #fff; }
-.left-1\/2         { left: 50%; }
-.bottom-3          { bottom: .75rem; }
-.-translate-x-1\/2 { transform: translateX(-50%); }
-.drop-shadow       { filter: drop-shadow(0 1px 2px rgb(0 0 0 / .1)) drop-shadow(0 1px 1px rgb(0 0 0 / .06)); }
-
-/* --- sizing / spacing ------------------------------------------------------ */
-.max-w-sm  { max-width: 24rem; }
-.max-w-3xl { max-width: 48rem; }
-.max-h-96  { max-height: 24rem; }
-.w-20 { width: 5rem; }
-.w-28 { width: 7rem; }
-.w-40 { width: 10rem; }
-.px-10 { padding-left: 2.5rem; padding-right: 2.5rem; }
-.gap-1 { gap: .25rem; }
-.ml-auto { margin-left: auto; }
-.align-top { vertical-align: top; }
-.tracking-widest { letter-spacing: .1em; }
-.underline { text-decoration-line: underline; }
-/* Deactivated allow-list rows are rendered faded + struck through. */
-.opacity-40 { opacity: .4; }
-.line-through { text-decoration-line: line-through; }
-.col-span-3 { grid-column: span 3 / span 3; }
-
-@media (min-width: 1024px) {
-  .lg\:grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-}
-
 /* ===========================================================================
- * Office dashboard (admin/attendance.php) — one type/spacing scale.
- *
- * The six tab panels are built from JS template strings, and each had grown its
- * own ad-hoc mix of text-xs/text-sm and px-2/px-3/px-4 + py-0.5/py-1/py-1.5/py-2,
- * so switching tabs visibly changed font size and padding. These component
- * classes are the single source of truth: panels use .atta-* and only colour is
- * left to Tailwind utilities. Authored here (not in the purged vendor build), so
- * they cannot silently go missing.
+ * Student capture flow (student/attendance.php + attendance.js + faceguide.js)
  * ======================================================================== */
-
-/* Wide layout: this dashboard is dense tabular data, not prose, so it opts out
-   of the shared max-w-7xl (1280px) that header.php puts on <main>. The class is
-   added from JS since <main> is rendered by the shared header. */
-main.atta-wide { max-width: 1800px; }
-
-/* Tab strip. Previously each button carried hover:text-gray-800, whose
-   (0,2,0) specificity beat the .text-blue-700 the JS adds to the active tab —
-   so the tab you just clicked went gray while the cursor sat on it. Owning the
-   states here keeps hover from outranking "selected". */
-.atta-tab {
-  padding: .5rem 1rem;
-  font-size: .8125rem;
-  font-weight: 500;
-  color: #6b7280;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-}
-.atta-tab:hover { color: #1f2937; }
-.atta-tab.is-active { color: #1d4ed8; border-bottom-color: #2563eb; }
-.atta-tab.is-active:hover { color: #1d4ed8; }   /* selected beats hover */
-
-.atta-card {
-  background: #fff;
-  border-radius: .5rem;
-  box-shadow: 0 1px 3px 0 rgb(0 0 0 / .1), 0 1px 2px -1px rgb(0 0 0 / .1);
-  padding: 1.25rem;
-  margin-bottom: 1rem;
-  /* The card owns the base type size. Without it a card's bare text nodes fall
-     back to the 16px UA default (nothing in the cascade sets one), which is how
-     the Reviews panel ended up 3px larger than every table. */
-  font-size: .8125rem;
-}
-.atta-card:last-child { margin-bottom: 0; }
-.atta-card-flush { padding: 0; overflow-x: auto; }   /* cards that hold a table */
-
-/* Cards laid out in a grid must not add their own bottom margin on top of the
-   grid gap — it doubles the spacing and, in a 2-column row, makes a stretched
-   card's box 1rem shorter than its neighbour's. */
-.atta-grid { display: grid; gap: 1rem; }
-.atta-grid > .atta-card { margin-bottom: 0; }
-@media (min-width: 1024px) {
-  .atta-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-.atta-card-title {
-  font-size: .9375rem;
-  font-weight: 600;
-  color: #111827;
-  margin-bottom: .25rem;
-}
-.atta-card-note {                                    /* the explanatory line under a title */
-  font-size: .75rem;
-  line-height: 1.5;
-  color: #6b7280;
-  margin-bottom: .75rem;
-}
-
-/* Tables: identical metrics on every tab, audit included (it used text-xs). */
-.atta-table { width: 100%; min-width: 100%; font-size: .8125rem; border-collapse: collapse; }
-.atta-table thead { background: #f3f4f6; }
-.atta-table th {
-  padding: .625rem 1rem;
-  text-align: left;
-  font-size: .6875rem;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: .03em;
-  color: #6b7280;
-  white-space: nowrap;
-}
-.atta-table td { padding: .625rem 1rem; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
-.atta-table tbody tr:last-child td { border-bottom: 0; }
-.atta-table tbody tr:hover { background: #f9fafb; }
-.atta-table .atta-num { text-align: right; white-space: nowrap; }
-
-/* One row-height for every control, so forms don't jump between tabs. */
-.atta-input {
-  border: 1px solid #d1d5db;
-  border-radius: .375rem;
-  padding: .375rem .625rem;
-  font-size: .8125rem;
-  line-height: 1.25rem;
-  color: #111827;
-  background: #fff;
-}
-.atta-input:focus { outline: 2px solid #3b82f6; outline-offset: -1px; border-color: #3b82f6; }
-.atta-input-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-
-.atta-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: .375rem;
-  padding: .375rem .875rem;
-  border-radius: .375rem;
-  font-size: .8125rem;
-  font-weight: 500;
-  line-height: 1.25rem;
-  color: #fff;
-  background: #2563eb;
-  border: 0;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.atta-btn:hover { background: #1d4ed8; }
-.atta-btn-green { background: #16a34a; } .atta-btn-green:hover { background: #15803d; }
-.atta-btn-red   { background: #dc2626; } .atta-btn-red:hover   { background: #b91c1c; }
-.atta-btn-amber { background: #d97706; } .atta-btn-amber:hover { background: #b45309; }
-
-/* Inline text actions inside table rows / lists. */
-.atta-link {
-  background: none;
-  border: 0;
-  padding: 0;
-  font-size: .75rem;
-  font-weight: 500;
-  color: #2563eb;
-  cursor: pointer;
-}
-.atta-link:hover { text-decoration: underline; }
-.atta-link + .atta-link { margin-left: .75rem; }
-.atta-link-gray  { color: #4b5563; }
-.atta-link-red   { color: #dc2626; }
-.atta-link-amber { color: #b45309; }
-
-/* A row of inline actions that wraps instead of stretching the column. */
-.atta-actions { display: flex; flex-wrap: wrap; gap: .75rem; justify-content: flex-end; }
-.atta-actions .atta-link + .atta-link { margin-left: 0; }
-
-.atta-chip {
-  display: inline-block;
-  padding: .125rem .5rem;
-  border-radius: .25rem;
-  font-size: .6875rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.atta-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; }
-.atta-muted { font-size: .75rem; color: #6b7280; }
-.atta-empty { font-size: .8125rem; color: #6b7280; }
-/* Declared after .atta-empty so it wins: a Tailwind text-red-600 alongside
-   .atta-empty would lose on source order and render the warning gray. */
-.atta-empty-warn { font-size: .8125rem; color: #dc2626; font-weight: 500; }
-.atta-footnote { font-size: .75rem; color: #6b7280; margin-top: .5rem; }
-
-/* Config rows: label left, control(s) right, uniform height. */
-.atta-row {
-  display: flex;
-  align-items: center;
-  gap: .5rem;
-  padding: .375rem 0;
-  font-size: .8125rem;
-}
-.atta-row + .atta-row { border-top: 1px solid #f3f4f6; }
-.atta-row-label { flex: 1 1 auto; min-width: 0; }
-.atta-form-row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .75rem; }
-.atta-form-row > .atta-input { min-width: 0; }
 
 /* Mirror the PREVIEW only, like every selfie camera: raising your right hand
    should raise the hand on the right of the screen, or aiming the head at a
@@ -241,27 +25,104 @@ main.atta-wide { max-width: 1800px; }
    ring's x-axis to match this preview (MIRRORED there). */
 #att-video { transform: scaleX(-1); }
 
+/* The capture frame: portrait 3:4, as large as a phone allows without pushing
+   Cancel off a short screen (the vh term), capped for tablets/desktops.
+   faceguide.js measures this box at runtime to size its canvas. */
+.att-frame {
+  width: min(78vw, 300px, 40vh);
+  aspect-ratio: 3 / 4;
+}
+
+/* Soft vignette that draws the eye to the centre of the frame, where the
+   pose guide sits. Purely decorative; never intercepts taps. */
+.att-vignette {
+  background: radial-gradient(ellipse 72% 62% at 50% 46%, transparent 58%, rgb(2 6 23 / .55) 100%);
+}
+
 /* --- live capture ring (faceguide.js) ------------------------------------- */
-/* The canvas is appended next to #att-video inside its .relative wrapper and
-   must sit exactly on top of it; pointer-events off so Cancel stays tappable. */
+/* The canvas is appended next to #att-video inside .att-frame and must sit
+   exactly on top of it; pointer-events off so Cancel stays tappable. */
 .att-ring {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
-  border-radius: 1rem;
+  border-radius: inherit;
 }
 
-/* --- enrollment row: keep the submit button reachable on narrow phones ----- */
-/* A flex row with a text input can overflow, pushing the button off-screen,
-   because an <input> will not shrink below its intrinsic width. Stack them
-   instead on small screens. */
-.att-enroll-row { display: flex; gap: .75rem; flex-direction: column; }
-.att-enroll-row > input { min-width: 0; width: 100%; }
-.att-enroll-row > button { width: 100%; }
-@media (min-width: 640px) {
-  .att-enroll-row { flex-direction: row; }
-  .att-enroll-row > input { flex: 1 1 auto; }
-  .att-enroll-row > button { width: auto; flex-shrink: 0; }
+/* The action strip under today's status holds the Mark button and the hint.
+   Collapse it when neither is showing (already marked, holiday, …) so the card
+   ends at the status instead of trailing an empty padded band. */
+.att-cta:not(:has(> #att-mark-btn:not(.hidden), > #att-mark-hint:not(:empty))) {
+  display: none;
+}
+
+/* The server clock chip in the page header: hidden until attendance.js has
+   something to put in it (and while the service is unreachable). */
+.att-clock-chip:has(#att-clock:empty) { display: none; }
+
+/* ===========================================================================
+ * Office dashboard tabs (admin/attendance.php)
+ *
+ * attendance-admin.js only toggles .is-active on .atta-tab, so the states are
+ * owned here: a hover rule written as a utility would carry the same
+ * specificity as the active colour and could grey out the selected tab.
+ * (The page now uses the shared max-w-7xl <main>; the JS still adds
+ * .atta-wide to it, which is deliberately unstyled.)
+ * ======================================================================== */
+.atta-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: -1px;                 /* sit on the strip's bottom border */
+  padding: .75rem .125rem;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font-size: .875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  color: #64748b;                      /* gray-500 (slate) */
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease;
+}
+.atta-tab > i { font-size: .8125rem; opacity: .75; }
+.atta-tab:hover { color: #0f172a; border-bottom-color: #cbd5e1; }
+.atta-tab.is-active,
+.atta-tab.is-active:hover { color: #253ed0; border-bottom-color: #2d4fe3; }   /* brand-700 / brand-600 */
+.atta-tab.is-active > i { opacity: 1; }
+.atta-tab:focus-visible { outline: 2px solid #426cef; outline-offset: 2px; border-radius: .375rem; }
+
+/* ===========================================================================
+ * Full-screen code display (admin/attendance_display.php) — a TV in the office.
+ * Sizes scale with the viewport so the code reads from across the room; the
+ * clamps keep a laptop preview sensible.
+ * ======================================================================== */
+.att-display {
+  background-image:
+    radial-gradient(ellipse 80% 55% at 50% -5%, rgb(45 79 227 / .30), transparent 62%),
+    radial-gradient(ellipse 60% 45% at 50% 110%, rgb(124 58 237 / .18), transparent 60%);
+}
+.att-display-mark {
+  width: clamp(3rem, 3.4vw, 5.5rem);
+  height: clamp(3rem, 3.4vw, 5.5rem);
+  font-size: clamp(1.25rem, 1.6vw, 2.5rem);
+}
+.att-display-brand { font-size: clamp(1.125rem, 1.6vw, 2.5rem); }
+.att-display-sub { font-size: clamp(.875rem, 1.15vw, 1.75rem); }
+.att-display-eyebrow {
+  font-size: clamp(1rem, 1.5vw, 2.25rem);
+  letter-spacing: .35em;
+  padding-left: .35em;                 /* balance the trailing tracking so it centres */
+}
+.att-display-off { font-size: clamp(1.25rem, 2.4vw, 3.5rem); }
+.att-code {
+  margin-top: 1.5vh;
+  font-size: min(19vw, 38vh);
+  line-height: 1;
+  letter-spacing: .08em;
+  padding-left: .08em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 80px rgb(66 108 239 / .35);
 }

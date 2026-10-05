@@ -78,28 +78,31 @@ usort($rows, fn($a, $b) =>
     <=> [$b['leave']['start_date'], $b['leave']['student_name']]);
 ?>
 
-<div class="mb-6 flex flex-wrap items-start justify-between gap-3">
+<div class="page-header">
     <div>
-        <h1 class="text-3xl font-bold text-gray-900">Monthly Leaves</h1>
-        <p class="text-gray-600 mt-2">Who is on leave in <?php echo $monthLabel; ?></p>
+        <p class="page-eyebrow">Admin</p>
+        <h1 class="page-title">Monthly Leaves</h1>
+        <p class="page-subtitle">Who is on leave in <?php echo $monthLabel; ?></p>
     </div>
-    <div class="flex items-center gap-2">
-        <a href="?month=<?php echo $prevMonth; ?>&show=<?php echo $filterGroup; ?>"
-           class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" title="Previous month">
-            <i class="fas fa-chevron-left"></i>
-        </a>
-        <form method="get">
-            <input type="month" name="month" value="<?php echo $monthKey; ?>" onchange="this.form.submit()"
-                   class="border border-gray-300 rounded-lg px-3 py-2 text-sm">
-            <input type="hidden" name="show" value="<?php echo $filterGroup; ?>">
-        </form>
-        <a href="?month=<?php echo $nextMonth; ?>&show=<?php echo $filterGroup; ?>"
-           class="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200" title="Next month">
-            <i class="fas fa-chevron-right"></i>
-        </a>
-        <a href="<?php echo BASE_URL; ?>/admin/leave_management.php"
-           class="ml-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 whitespace-nowrap">
-            <i class="fas fa-file-alt mr-2"></i>All Leaves
+    <div class="flex flex-wrap items-center gap-2">
+        <!-- Month navigator -->
+        <div class="inline-flex items-center gap-1 rounded-xl bg-gray-100 p-1">
+            <a href="?month=<?php echo $prevMonth; ?>&show=<?php echo $filterGroup; ?>"
+               class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition hover:bg-white hover:text-gray-900 hover:shadow-sm" title="Previous month" aria-label="Previous month">
+                <i class="fas fa-chevron-left text-xs"></i>
+            </a>
+            <form method="get">
+                <input type="month" name="month" value="<?php echo $monthKey; ?>" onchange="this.form.submit()"
+                       class="h-9 rounded-lg border-0 bg-white px-3 text-sm font-medium text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30" aria-label="Month">
+                <input type="hidden" name="show" value="<?php echo $filterGroup; ?>">
+            </form>
+            <a href="?month=<?php echo $nextMonth; ?>&show=<?php echo $filterGroup; ?>"
+               class="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition hover:bg-white hover:text-gray-900 hover:shadow-sm" title="Next month" aria-label="Next month">
+                <i class="fas fa-chevron-right text-xs"></i>
+            </a>
+        </div>
+        <a href="<?php echo BASE_URL; ?>/admin/leave_management.php" class="btn btn-secondary">
+            <i class="fas fa-file-alt"></i>All Leaves
         </a>
     </div>
 </div>
@@ -116,85 +119,107 @@ $cardLabels = [
 ][$filterGroup];
 ?>
 <!-- Quick Stats -->
-<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-    <div class="bg-white rounded-lg shadow-md p-6">
-        <p class="text-sm text-gray-600"><?php echo $cardLabels[0]; ?> in <?php echo $monthLabel; ?></p>
-        <p class="text-3xl font-bold text-gray-900"><?php echo count($rows); ?></p>
+<div class="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+    <div class="stat-tile">
+        <span class="icon-chip chip-brand"><i class="fas fa-file-alt"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label"><?php echo $cardLabels[0]; ?></p>
+            <p class="stat-value"><?php echo count($rows); ?></p>
+            <p class="stat-meta">in <?php echo $monthLabel; ?></p>
+        </div>
     </div>
-    <div class="bg-white rounded-lg shadow-md p-6">
-        <p class="text-sm text-gray-600"><?php echo $cardLabels[1]; ?></p>
-        <p class="text-3xl font-bold text-blue-600"><?php echo count($studentIds); ?></p>
+    <div class="stat-tile">
+        <span class="icon-chip chip-violet"><i class="fas fa-user-graduate"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label"><?php echo $cardLabels[1]; ?></p>
+            <p class="stat-value"><?php echo count($studentIds); ?></p>
+            <p class="stat-meta">Distinct students</p>
+        </div>
     </div>
-    <div class="bg-white rounded-lg shadow-md p-6">
-        <p class="text-sm text-gray-600"><?php echo $cardLabels[2]; ?> in <?php echo $monthLabel; ?></p>
-        <p class="text-3xl font-bold text-orange-600"><?php echo $totalDaysInMonth; ?></p>
-    </div>
-</div>
-
-<!-- Status Group Filter -->
-<div class="bg-white rounded-lg shadow-md p-4 mb-6">
-    <div class="flex flex-wrap gap-2">
-        <a href="?month=<?php echo $monthKey; ?>&show=approved"
-           class="px-4 py-2 <?php echo $filterGroup === 'approved' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'; ?> rounded-lg text-sm">
-            Approved <span class="ml-1 px-2 py-0.5 <?php echo $filterGroup === 'approved' ? 'bg-white bg-opacity-30' : 'bg-gray-200'; ?> rounded-full"><?php echo $approvedCount; ?></span>
-        </a>
-        <a href="?month=<?php echo $monthKey; ?>&show=pending"
-           class="px-4 py-2 <?php echo $filterGroup === 'pending' ? 'bg-yellow-600 text-white' : 'bg-gray-100 text-gray-700'; ?> rounded-lg text-sm">
-            Pending <span class="ml-1 px-2 py-0.5 <?php echo $filterGroup === 'pending' ? 'bg-white bg-opacity-30' : 'bg-gray-200'; ?> rounded-full"><?php echo $pendingCount; ?></span>
-        </a>
-        <a href="?month=<?php echo $monthKey; ?>&show=all"
-           class="px-4 py-2 <?php echo $filterGroup === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700'; ?> rounded-lg text-sm">
-            All <span class="ml-1 px-2 py-0.5 <?php echo $filterGroup === 'all' ? 'bg-white bg-opacity-30' : 'bg-gray-200'; ?> rounded-full"><?php echo count($allLeaves); ?></span>
-        </a>
+    <div class="stat-tile">
+        <span class="icon-chip chip-amber"><i class="fas fa-calendar-day"></i></span>
+        <div class="min-w-0">
+            <p class="stat-label"><?php echo $cardLabels[2]; ?></p>
+            <p class="stat-value"><?php echo $totalDaysInMonth; ?></p>
+            <p class="stat-meta">Days falling in <?php echo $monthLabel; ?></p>
+        </div>
     </div>
 </div>
 
+<?php
+$segBase  = 'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-sm font-medium transition sm:gap-2 sm:px-3';
+$segOn    = $segBase . ' bg-white text-gray-900 shadow-sm';
+$segOff   = $segBase . ' text-gray-600 hover:text-gray-900';
+$segCount = 'rounded-md bg-gray-200/80 px-1.5 text-xs font-semibold tabular-nums text-gray-700';
+?>
 <!-- Leaves Table -->
-<div class="bg-white rounded-lg shadow-md overflow-hidden">
+<div class="card overflow-hidden">
+    <div class="card-header flex-col items-start sm:flex-row sm:items-center">
+        <div>
+            <h2 class="card-title"><?php echo $monthLabel; ?></h2>
+            <p class="card-subtitle">Applications overlapping the month, earliest first</p>
+        </div>
+        <!-- Status Group Filter -->
+        <nav class="inline-flex max-w-full overflow-x-auto rounded-xl bg-gray-100 p-1" aria-label="Filter by status">
+            <a href="?month=<?php echo $monthKey; ?>&show=approved" class="<?php echo $filterGroup === 'approved' ? $segOn : $segOff; ?>">
+                <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>Approved <span class="<?php echo $segCount; ?>"><?php echo $approvedCount; ?></span>
+            </a>
+            <a href="?month=<?php echo $monthKey; ?>&show=pending" class="<?php echo $filterGroup === 'pending' ? $segOn : $segOff; ?>">
+                <span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>Pending <span class="<?php echo $segCount; ?>"><?php echo $pendingCount; ?></span>
+            </a>
+            <a href="?month=<?php echo $monthKey; ?>&show=all" class="<?php echo $filterGroup === 'all' ? $segOn : $segOff; ?>">
+                All <span class="<?php echo $segCount; ?>"><?php echo count($allLeaves); ?></span>
+            </a>
+        </nav>
+    </div>
+
     <?php if (empty($rows)): ?>
-        <div class="p-12 text-center text-gray-500">
-            <i class="fas fa-umbrella-beach text-6xl mb-4"></i>
-            <p>No <?php echo $filterGroup === 'all' ? '' : $filterGroup . ' '; ?>leaves in <?php echo $monthLabel; ?></p>
+        <div class="p-5 sm:p-6">
+            <div class="empty-state">
+                <div class="empty-state-icon"><i class="fas fa-umbrella-beach"></i></div>
+                <p class="empty-state-title">No <?php echo $filterGroup === 'all' ? '' : $filterGroup . ' '; ?>leaves in <?php echo $monthLabel; ?></p>
+                <p class="empty-state-description">Try another month or status group.</p>
+            </div>
         </div>
     <?php else: ?>
         <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200" id="monthlyLeavesTable">
-                <thead class="bg-gray-50">
+            <table class="min-w-full text-sm" id="monthlyLeavesTable">
+                <thead>
                     <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Student</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Roll Number</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dates</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Days in <?php echo $monthStart->format('M'); ?></th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reason</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th>Student</th>
+                        <th>Roll Number</th>
+                        <th>Type</th>
+                        <th>Dates</th>
+                        <th>Days in <?php echo $monthStart->format('M'); ?></th>
+                        <th>Reason</th>
+                        <th>Status</th>
                     </tr>
                 </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
+                <tbody>
                     <?php foreach ($rows as $row): $leave = $row['leave']; ?>
-                        <tr class="hover:bg-gray-50">
-                            <td class="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
+                        <tr>
+                            <td class="whitespace-nowrap font-medium text-gray-900">
                                 <?php echo sanitize($leave['student_name']); ?>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            <td class="whitespace-nowrap tabular-nums text-gray-500">
                                 <?php echo sanitize($leave['roll_number']); ?>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap"><?php echo getLeaveTypeBadge($leave['leave_type']); ?></td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" data-order="<?php echo $leave['start_date']; ?>">
-                                <?php echo formatDate($leave['start_date']); ?> - <?php echo formatDate($leave['end_date']); ?>
+                            <td class="whitespace-nowrap"><?php echo getLeaveTypeBadge($leave['leave_type']); ?></td>
+                            <td class="whitespace-nowrap text-gray-700" data-order="<?php echo $leave['start_date']; ?>">
+                                <?php echo formatDate($leave['start_date']); ?> <span class="text-gray-400">&ndash;</span> <?php echo formatDate($leave['end_date']); ?>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900" data-order="<?php echo $row['daysInMonth']; ?>">
-                                <?php echo $row['daysInMonth']; ?>
+                            <td class="whitespace-nowrap" data-order="<?php echo $row['daysInMonth']; ?>">
+                                <span class="font-semibold tabular-nums text-gray-900"><?php echo $row['daysInMonth']; ?></span>
                                 <?php if ((int)$leave['total_days'] !== $row['daysInMonth']): ?>
-                                    <span class="text-xs font-normal text-gray-500">of <?php echo $leave['total_days']; ?></span>
+                                    <span class="text-xs text-gray-500">of <?php echo $leave['total_days']; ?></span>
                                 <?php endif; ?>
                             </td>
-                            <td class="px-6 py-4 text-sm text-gray-600">
-                                <span class="truncate block" style="max-width: 280px;" title="<?php echo sanitize($leave['reason']); ?>">
+                            <td class="text-gray-600">
+                                <span class="block truncate" style="max-width: 280px;" title="<?php echo sanitize($leave['reason']); ?>">
                                     <?php echo sanitize($leave['reason']); ?>
                                 </span>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap"><?php echo getStatusBadge($leave['status']); ?></td>
+                            <td class="whitespace-nowrap"><?php echo getStatusBadge($leave['status']); ?></td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>

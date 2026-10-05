@@ -59,10 +59,12 @@ logSystemAction(
     "Admin '{$admin['user_name']}' (ID: {$admin['user_id']}) stopped impersonating '{$impersonatedName}' (ID: {$impersonatedId})"
 );
 
-// Restore admin session.
+// Restore admin session. loginUser() drops the impersonated identity (including
+// a student's student_id), clears the stash, re-records the admin's password
+// fingerprint from the fresh row and rotates the session ID.
 loginUser($adminUser);
 
-// Ensure the impersonator stash is gone (loginUser doesn't touch it).
+// Belt and braces: the stash must never survive a restore.
 unset($_SESSION['impersonator']);
 
 header('Location: ' . BASE_URL . '/admin/users.php');

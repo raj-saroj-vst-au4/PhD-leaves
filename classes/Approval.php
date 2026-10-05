@@ -2,6 +2,21 @@
 /**
  * Approval Class
  * Handles all leave approval workflow operations
+ *
+ * Every decision (approve / reject / cancel) runs the same way:
+ *
+ *   BEGIN -> lock the leave row (SELECT ... FOR UPDATE) -> re-check that it is
+ *   still at the stage this decision belongs to, and that the actor is that
+ *   stage's approver -> update the row, conditionally on that same stage, and on
+ *   final approval deduct the balance -> COMMIT.
+ *
+ * The lock is what makes a decision safe to repeat. Without it two approvers (or
+ * one double-click, or a retried request) could both read "pending_hod", both pass
+ * the status check and both deduct the balance. With it the second request waits
+ * for the first, then sees the new status and fails cleanly with nothing changed.
+ *
+ * Emails are NOT sent from here: the caller sends them after the method returns,
+ * i.e. after the commit, so nobody is told about a decision that was rolled back.
  */
 
 // cancelByAdmin() reads Leave::PENDING_STATUSES. Every caller happens to load
@@ -19,7 +34,13 @@ class Approval {
         'Auto-approved: the Faculty Guide and TA Coordinator are the same person, '
         . 'and this was settled by their approval at the Guide stage.';
 
+    /** Values hod_payment_status accepts. */
+    const PAYMENT_STATUSES = ['paid', 'partially_paid', 'unpaid'];
+
     private $db;
+    // True while a decision started by this object is open, so a failure rolls
+    // back only what this object began — never a transaction a caller owns.
+    private $inDecision = false;
 
     public function __construct($db = null) {
         $this->db = $db ?? getDBConnection();
@@ -30,23 +51,15 @@ class Approval {
      */
     public function approveByGuide($leaveId, $facultyId, $remarks = null) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
+            $leave = $this->lockLeave($leaveId);
 
             // Verify this faculty is the guide for this student
-            if ($leave['faculty_guide_id'] != $facultyId) {
+            if ((int) $leave['faculty_guide_id'] !== (int) $facultyId) {
                 throw new Exception("Unauthorized: You are not the guide for this student");
             }
 
             // Verify current status
-            if ($leave['status'] !== 'pending_guide') {
-                throw new Exception("Leave is not pending guide approval");
-            }
+            $this->requireStatus($leave, 'pending_guide', 'Faculty Guide');
 
             $hasTA = !empty($leave['ta_coordinator_id']);
             // One person holding both roles would otherwise be asked to approve
@@ -85,52 +98,48 @@ class Approval {
 
             // Update leave application. ta_approved_at is stamped alongside an
             // auto-approval so the stage carries a time as well as a reason.
-            $sql = "UPDATE leave_applications
-                    SET guide_status = 'approved',
-                        guide_remarks = :remarks,
-                        guide_approved_at = NOW(),
-                        ta_status = :ta_status,
-                        ta_remarks = COALESCE(:ta_remarks, ta_remarks),
-                        ta_approved_at = CASE WHEN :ta_auto = 1 THEN NOW() ELSE ta_approved_at END,
-                        status = :new_status,
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
-
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            $this->transition($leaveId, 'pending_guide',
+                "guide_status = 'approved',
+                 guide_remarks = :remarks,
+                 guide_approved_at = NOW(),
+                 ta_status = :ta_status,
+                 ta_remarks = COALESCE(:ta_remarks, ta_remarks),
+                 ta_approved_at = CASE WHEN :ta_auto = 1 THEN NOW() ELSE ta_approved_at END,
+                 status = :new_status", [
                 ':remarks' => $remarks,
                 ':ta_status' => $taStatus,
                 ':ta_remarks' => $taRemarks,
                 ':ta_auto' => $taStatus === 'approved' ? 1 : 0,
                 ':new_status' => $newStatus,
-                ':leave_id' => $leaveId
             ]);
 
             // Log action
             $this->logAction($facultyId, 'guide_approved', $leaveId,
-                "Guide approved leave application ID $leaveId for student {$leave['student_name']}");
+                "Guide approved leave application ID $leaveId for student " . $this->studentLabel($leave)
+                . ($newStatus === 'pending_hod' ? '; TA stage settled automatically, forwarded to HOD' : ''));
 
             // Send notification to next approver. Note this keys on the status we
             // just wrote, not on $hasTA — when the guide is also the TA there IS a
             // TA, but the application has already passed that stage.
             if ($newStatus === 'pending_ta') {
-                $this->sendNotification($leave['ta_coordinator_id'], 'ta_approval_pending', $leaveId);
+                $this->sendNotification($facultyId, $leave['ta_coordinator_id'], 'ta_approval_pending', $leaveId);
             } else {
-                $this->sendNotification(null, 'hod_approval_pending', $leaveId, 'hod');
+                $this->sendNotification($facultyId, null, 'hod_approval_pending', $leaveId, 'hod');
             }
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
                 'message' => $message,
-                'next_approver' => $nextApprover
+                'next_approver' => $nextApprover,
+                // The caller emails whoever acts next; it needs the stage the
+                // application actually landed in, not a guess from $hasTA.
+                'new_status' => $newStatus
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("Guide approval failed: " . $e->getMessage());
-            throw new Exception("Failed to approve leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'Guide approval failed', 'Failed to approve leave');
         }
     }
 
@@ -139,61 +148,50 @@ class Approval {
      */
     public function rejectByGuide($leaveId, $facultyId, $remarks) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
-
-            // Verify this faculty is the guide for this student
-            if ($leave['faculty_guide_id'] != $facultyId) {
-                throw new Exception("Unauthorized: You are not the guide for this student");
-            }
-
-            // Verify current status
-            if ($leave['status'] !== 'pending_guide') {
-                throw new Exception("Leave is not pending guide approval");
-            }
-
             if (empty($remarks)) {
                 throw new Exception("Rejection remarks are required");
             }
 
-            // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET guide_status = 'rejected',
-                        guide_remarks = :remarks,
-                        guide_approved_at = NOW(),
-                        status = 'rejected',
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
+            $leave = $this->lockLeave($leaveId);
 
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            // Verify this faculty is the guide for this student
+            if ((int) $leave['faculty_guide_id'] !== (int) $facultyId) {
+                throw new Exception("Unauthorized: You are not the guide for this student");
+            }
+
+            // Verify current status. Nothing is refunded on rejection: the balance
+            // is deducted only on the move to 'approved', and only a pending
+            // application can get here.
+            $this->requireStatus($leave, 'pending_guide', 'Faculty Guide');
+
+            // Update leave application
+            $this->transition($leaveId, 'pending_guide',
+                "guide_status = 'rejected',
+                 guide_remarks = :remarks,
+                 guide_approved_at = NOW(),
+                 status = 'rejected'", [
                 ':remarks' => $remarks,
-                ':leave_id' => $leaveId
             ]);
+
+            $restored = $this->restoreCombinedSources($leaveId, $facultyId, 'rejected');
 
             // Log action
             $this->logAction($facultyId, 'guide_rejected', $leaveId,
-                "Guide rejected leave application ID $leaveId for student {$leave['student_name']}");
+                "Guide rejected leave application ID $leaveId for student " . $this->studentLabel($leave));
 
             // Send notification to student
-            $this->sendNotification($leave['user_id'], 'leave_rejected', $leaveId);
+            $this->sendNotification($facultyId, $leave['user_id'], 'leave_rejected', $leaveId);
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
-                'message' => 'Leave application rejected'
+                'message' => 'Leave application rejected' . self::restoredNote($restored),
+                'restored_leave_ids' => $restored
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("Guide rejection failed: " . $e->getMessage());
-            throw new Exception("Failed to reject leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'Guide rejection failed', 'Failed to reject leave');
         }
     }
 
@@ -202,60 +200,45 @@ class Approval {
      */
     public function approveByTA($leaveId, $facultyId, $remarks = null, $noDutyConfirmed = false) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
+            $leave = $this->lockLeave($leaveId);
 
             // Verify this faculty is the TA coordinator for this student
-            if ($leave['ta_coordinator_id'] != $facultyId) {
+            if ((int) $leave['ta_coordinator_id'] !== (int) $facultyId) {
                 throw new Exception("Unauthorized: You are not the TA coordinator for this student");
             }
 
             // Verify current status
-            if ($leave['status'] !== 'pending_ta') {
-                throw new Exception("Leave is not pending TA coordinator approval");
-            }
+            $this->requireStatus($leave, 'pending_ta', 'TA Coordinator');
 
             // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET ta_status = 'approved',
-                        ta_remarks = :remarks,
-                        ta_no_duty_confirmed = :no_duty_confirmed,
-                        ta_approved_at = NOW(),
-                        status = 'pending_hod',
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
-
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            $this->transition($leaveId, 'pending_ta',
+                "ta_status = 'approved',
+                 ta_remarks = :remarks,
+                 ta_no_duty_confirmed = :no_duty_confirmed,
+                 ta_approved_at = NOW(),
+                 status = 'pending_hod'", [
                 ':remarks' => $remarks,
                 ':no_duty_confirmed' => $noDutyConfirmed ? 1 : 0,
-                ':leave_id' => $leaveId
             ]);
 
             // Log action
             $this->logAction($facultyId, 'ta_approved', $leaveId,
-                "TA Coordinator approved leave application ID $leaveId for student {$leave['student_name']}");
+                "TA Coordinator approved leave application ID $leaveId for student " . $this->studentLabel($leave));
 
             // Send notification to HOD
-            $this->sendNotification(null, 'hod_approval_pending', $leaveId, 'hod');
+            $this->sendNotification($facultyId, null, 'hod_approval_pending', $leaveId, 'hod');
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
                 'message' => 'Leave approved successfully. Forwarded to HOD.',
-                'next_approver' => 'HOD'
+                'next_approver' => 'HOD',
+                'new_status' => 'pending_hod'
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("TA approval failed: " . $e->getMessage());
-            throw new Exception("Failed to approve leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'TA approval failed', 'Failed to approve leave');
         }
     }
 
@@ -264,81 +247,66 @@ class Approval {
      */
     public function rejectByTA($leaveId, $facultyId, $remarks) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
-
-            // Verify this faculty is the TA coordinator for this student
-            if ($leave['ta_coordinator_id'] != $facultyId) {
-                throw new Exception("Unauthorized: You are not the TA coordinator for this student");
-            }
-
-            // Verify current status
-            if ($leave['status'] !== 'pending_ta') {
-                throw new Exception("Leave is not pending TA coordinator approval");
-            }
-
             if (empty($remarks)) {
                 throw new Exception("Rejection remarks are required");
             }
 
-            // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET ta_status = 'rejected',
-                        ta_remarks = :remarks,
-                        ta_approved_at = NOW(),
-                        status = 'rejected',
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
+            $leave = $this->lockLeave($leaveId);
 
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            // Verify this faculty is the TA coordinator for this student
+            if ((int) $leave['ta_coordinator_id'] !== (int) $facultyId) {
+                throw new Exception("Unauthorized: You are not the TA coordinator for this student");
+            }
+
+            // Verify current status (pending, so never deducted: nothing to refund)
+            $this->requireStatus($leave, 'pending_ta', 'TA Coordinator');
+
+            // Update leave application
+            $this->transition($leaveId, 'pending_ta',
+                "ta_status = 'rejected',
+                 ta_remarks = :remarks,
+                 ta_approved_at = NOW(),
+                 status = 'rejected'", [
                 ':remarks' => $remarks,
-                ':leave_id' => $leaveId
             ]);
+
+            $restored = $this->restoreCombinedSources($leaveId, $facultyId, 'rejected');
 
             // Log action
             $this->logAction($facultyId, 'ta_rejected', $leaveId,
-                "TA Coordinator rejected leave application ID $leaveId for student {$leave['student_name']}");
+                "TA Coordinator rejected leave application ID $leaveId for student " . $this->studentLabel($leave));
 
             // Send notification to student
-            $this->sendNotification($leave['user_id'], 'leave_rejected', $leaveId);
+            $this->sendNotification($facultyId, $leave['user_id'], 'leave_rejected', $leaveId);
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
-                'message' => 'Leave application rejected'
+                'message' => 'Leave application rejected' . self::restoredNote($restored),
+                'restored_leave_ids' => $restored
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("TA rejection failed: " . $e->getMessage());
-            throw new Exception("Failed to reject leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'TA rejection failed', 'Failed to reject leave');
         }
     }
 
     /**
      * Approve leave by HOD
+     *
+     * @param int $hodId users.id of the HOD making the decision (for the audit trail)
      */
-    public function approveByHOD($leaveId, $remarks = null, $paymentStatus = null) {
+    public function approveByHOD($leaveId, $hodId, $remarks = null, $paymentStatus = null) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
+            if ($paymentStatus !== null && !in_array($paymentStatus, self::PAYMENT_STATUSES, true)) {
+                throw new Exception("Invalid payment status");
             }
+
+            $leave = $this->lockLeave($leaveId);
 
             // Verify current status
-            if ($leave['status'] !== 'pending_hod') {
-                throw new Exception("Leave is not pending HOD approval");
-            }
+            $this->requireStatus($leave, 'pending_hod', 'HOD');
 
             // Check if this is extended academic leave (>15 days)
             $requiresAdminApproval = ($leave['leave_type'] === 'academic' && $leave['total_days'] > EXTENDED_LEAVE_THRESHOLD);
@@ -346,228 +314,408 @@ class Approval {
             $newStatus = $requiresAdminApproval ? 'pending_admin' : 'approved';
 
             // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET hod_status = 'approved',
-                        hod_remarks = :remarks,
-                        hod_payment_status = :payment_status,
-                        hod_approved_at = NOW(),
-                        status = :new_status,
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
-
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            $this->transition($leaveId, 'pending_hod',
+                "hod_status = 'approved',
+                 hod_remarks = :remarks,
+                 hod_payment_status = :payment_status,
+                 hod_approved_at = NOW(),
+                 status = :new_status", [
                 ':remarks' => $remarks,
                 ':payment_status' => $paymentStatus,
                 ':new_status' => $newStatus,
-                ':leave_id' => $leaveId
             ]);
 
-            // If fully approved (no admin approval needed), deduct leave balance
+            // If fully approved (no admin approval needed), deduct leave balance.
+            // Same transaction as the status change, under the row lock: the
+            // deduction happens exactly once, or not at all.
             if ($newStatus === 'approved') {
-                $this->deductLeaveBalance($leave);
+                $this->deductLeaveBalance($leave, $hodId);
             }
 
             // Log action
-            $this->logAction($leave['user_id'], 'hod_approved', $leaveId,
-                "HOD approved leave application ID $leaveId for student {$leave['student_name']}");
+            $this->logAction($hodId, 'hod_approved', $leaveId,
+                "HOD approved leave application ID $leaveId for student " . $this->studentLabel($leave)
+                . ($requiresAdminApproval ? '; forwarded to Admin for Dean AP approval' : ''));
 
             if ($requiresAdminApproval) {
                 // Send notification to admin
-                $this->sendNotification(null, 'admin_approval_pending', $leaveId, 'admin');
+                $this->sendNotification($hodId, null, 'admin_approval_pending', $leaveId, 'admin');
                 $message = 'Leave approved successfully. Forwarded to Admin for extended academic leave approval.';
                 $nextApprover = 'Admin';
             } else {
                 // Send notification to student
-                $this->sendNotification($leave['user_id'], 'leave_approved', $leaveId);
+                $this->sendNotification($hodId, $leave['user_id'], 'leave_approved', $leaveId);
                 $message = 'Leave approved successfully. Leave balance has been updated.';
                 $nextApprover = null;
             }
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
                 'message' => $message,
                 'next_approver' => $nextApprover,
-                'requires_admin_approval' => $requiresAdminApproval
+                'requires_admin_approval' => $requiresAdminApproval,
+                'new_status' => $newStatus
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("HOD approval failed: " . $e->getMessage());
-            throw new Exception("Failed to approve leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'HOD approval failed', 'Failed to approve leave');
         }
     }
 
     /**
      * Reject leave by HOD
+     *
+     * @param int $hodId users.id of the HOD making the decision (for the audit trail)
      */
-    public function rejectByHOD($leaveId, $remarks) {
+    public function rejectByHOD($leaveId, $hodId, $remarks) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
-
-            // Verify current status
-            if ($leave['status'] !== 'pending_hod') {
-                throw new Exception("Leave is not pending HOD approval");
-            }
-
             if (empty($remarks)) {
                 throw new Exception("Rejection remarks are required");
             }
 
-            // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET hod_status = 'rejected',
-                        hod_remarks = :remarks,
-                        hod_approved_at = NOW(),
-                        status = 'rejected',
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
+            $leave = $this->lockLeave($leaveId);
 
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            // Verify current status (pending, so never deducted: nothing to refund)
+            $this->requireStatus($leave, 'pending_hod', 'HOD');
+
+            // Update leave application
+            $this->transition($leaveId, 'pending_hod',
+                "hod_status = 'rejected',
+                 hod_remarks = :remarks,
+                 hod_approved_at = NOW(),
+                 status = 'rejected'", [
                 ':remarks' => $remarks,
-                ':leave_id' => $leaveId
             ]);
 
+            $restored = $this->restoreCombinedSources($leaveId, $hodId, 'rejected');
+
             // Log action
-            $this->logAction($leave['user_id'], 'hod_rejected', $leaveId,
-                "HOD rejected leave application ID $leaveId for student {$leave['student_name']}");
+            $this->logAction($hodId, 'hod_rejected', $leaveId,
+                "HOD rejected leave application ID $leaveId for student " . $this->studentLabel($leave));
 
             // Send notification to student
-            $this->sendNotification($leave['user_id'], 'leave_rejected', $leaveId);
+            $this->sendNotification($hodId, $leave['user_id'], 'leave_rejected', $leaveId);
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
-                'message' => 'Leave application rejected'
+                'message' => 'Leave application rejected' . self::restoredNote($restored),
+                'restored_leave_ids' => $restored
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("HOD rejection failed: " . $e->getMessage());
-            throw new Exception("Failed to reject leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'HOD rejection failed', 'Failed to reject leave');
+        }
+    }
+
+    /**
+     * Attach (or replace) the signed Dean AP approval document on an extended
+     * academic leave waiting for the admin.
+     *
+     * @param string $storedName basename returned by uploadFile(..., DEAN_AP_DOCS_DIR)
+     * @return string|null the previously attached document, for the caller to
+     *                     delete once this has committed
+     */
+    public function attachDeanAPDocument($leaveId, $adminId, $storedName) {
+        try {
+            $leave = $this->lockLeave($leaveId);
+
+            // Only while the admin stage is open: once decided, the document on
+            // record is the one the decision was taken on.
+            $this->requireStatus($leave, 'pending_admin', 'Admin');
+
+            $previous = $leave['admin_document_path'] ?: null;
+
+            $this->transition($leaveId, 'pending_admin',
+                "admin_document_path = :document", [
+                ':document' => $storedName,
+            ]);
+
+            $this->logAction($adminId, $previous ? 'dean_ap_document_replaced' : 'dean_ap_document_uploaded', $leaveId,
+                "Dean AP approval document " . ($previous ? 'replaced' : 'uploaded')
+                . " for leave application ID $leaveId of student " . $this->studentLabel($leave));
+
+            $this->commitDecision();
+
+            return $previous;
+
+        } catch (Throwable $e) {
+            $this->abort($e, 'Dean AP document upload failed', 'Failed to save the document');
         }
     }
 
     /**
      * Approve leave by Admin (for extended academic leaves)
+     *
+     * The Dean AP document is the one already attached to the application with
+     * attachDeanAPDocument(); it is never taken from the request, so a caller
+     * cannot point the record at an arbitrary path.
+     *
+     * @param int $adminId users.id of the admin making the decision
      */
-    public function approveByAdmin($leaveId, $documentPath = null, $remarks = null) {
+    public function approveByAdmin($leaveId, $adminId, $remarks = null) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
+            $leave = $this->lockLeave($leaveId);
 
             // Verify current status
-            if ($leave['status'] !== 'pending_admin') {
-                throw new Exception("Leave is not pending admin approval");
+            $this->requireStatus($leave, 'pending_admin', 'Admin');
+
+            // Final approval of an extended academic leave rests on the Dean's
+            // sign-off, so it has to be on file (and actually readable) first.
+            if (privateFilePath(DEAN_AP_DOCS_DIR, $leave['admin_document_path']) === null) {
+                throw new Exception("Upload the signed Dean AP approval document before approving");
             }
 
             // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET admin_status = 'approved',
-                        admin_document_path = :document_path,
-                        admin_approved_at = NOW(),
-                        status = 'approved',
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
-
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
-                ':document_path' => $documentPath,
-                ':leave_id' => $leaveId
+            $this->transition($leaveId, 'pending_admin',
+                "admin_status = 'approved',
+                 admin_remarks = :remarks,
+                 admin_approved_at = NOW(),
+                 status = 'approved'", [
+                ':remarks' => $remarks,
             ]);
 
             // Deduct leave balance now that it's fully approved
-            $this->deductLeaveBalance($leave);
+            $this->deductLeaveBalance($leave, $adminId);
 
             // Log action
-            $this->logAction($leave['user_id'], 'admin_approved', $leaveId,
-                "Admin approved leave application ID $leaveId for student {$leave['student_name']}");
+            $this->logAction($adminId, 'admin_approved', $leaveId,
+                "Admin approved leave application ID $leaveId for student " . $this->studentLabel($leave));
 
             // Send notification to student
-            $this->sendNotification($leave['user_id'], 'leave_approved', $leaveId);
+            $this->sendNotification($adminId, $leave['user_id'], 'leave_approved', $leaveId);
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
-                'message' => 'Leave approved successfully. Leave balance has been updated.'
+                'message' => 'Leave approved successfully. Leave balance has been updated.',
+                'new_status' => 'approved'
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("Admin approval failed: " . $e->getMessage());
-            throw new Exception("Failed to approve leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'Admin approval failed', 'Failed to approve leave');
         }
     }
 
     /**
      * Reject leave by Admin
+     *
+     * @param int $adminId users.id of the admin making the decision
      */
-    public function rejectByAdmin($leaveId, $remarks) {
+    public function rejectByAdmin($leaveId, $adminId, $remarks) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
-
-            // Verify current status
-            if ($leave['status'] !== 'pending_admin') {
-                throw new Exception("Leave is not pending admin approval");
-            }
-
             if (empty($remarks)) {
                 throw new Exception("Rejection remarks are required");
             }
 
-            // Update leave application
-            $sql = "UPDATE leave_applications
-                    SET admin_status = 'rejected',
-                        admin_approved_at = NOW(),
-                        status = 'rejected',
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
+            $leave = $this->lockLeave($leaveId);
 
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
-                ':leave_id' => $leaveId
+            // Verify current status (pending, so never deducted: nothing to refund)
+            $this->requireStatus($leave, 'pending_admin', 'Admin');
+
+            // Update leave application. The remarks are stored: they are what the
+            // student is told, and they used to be dropped here.
+            $this->transition($leaveId, 'pending_admin',
+                "admin_status = 'rejected',
+                 admin_remarks = :remarks,
+                 admin_approved_at = NOW(),
+                 status = 'rejected'", [
+                ':remarks' => $remarks,
             ]);
 
+            // An extended academic leave the admin turns down may be one that
+            // combineLeaves() made from approved leaves: those stand again.
+            $restored = $this->restoreCombinedSources($leaveId, $adminId, 'rejected');
+
             // Log action
-            $this->logAction($leave['user_id'], 'admin_rejected', $leaveId,
-                "Admin rejected leave application ID $leaveId for student {$leave['student_name']}");
+            $this->logAction($adminId, 'admin_rejected', $leaveId,
+                "Admin rejected leave application ID $leaveId for student " . $this->studentLabel($leave));
 
             // Send notification to student
-            $this->sendNotification($leave['user_id'], 'leave_rejected', $leaveId);
+            $this->sendNotification($adminId, $leave['user_id'], 'leave_rejected', $leaveId);
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
-                'message' => 'Leave application rejected'
+                'message' => 'Leave application rejected' . self::restoredNote($restored),
+                'restored_leave_ids' => $restored
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("Admin rejection failed: " . $e->getMessage());
-            throw new Exception("Failed to reject leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'Admin rejection failed', 'Failed to reject leave');
+        }
+    }
+
+    /**
+     * Re-settle a student's in-flight leave applications after their guide/TA
+     * changed (admin roster edit, or an approved change request).
+     *
+     * The leave chain reads the guide and TA from `students` at query time, so
+     * most applications simply follow the new people. The cases that do not:
+     *  - pending_ta with no TA any more: nobody could ever act on it. If a guide
+     *    really approved it, the TA stage is settled and it goes to the HOD, as
+     *    approveByGuide() does for a student with no TA. If not — releases before
+     *    2026-09 created guide==TA applications straight at pending_ta with the
+     *    guide stage merely marked approved, so no faculty member has looked at
+     *    it — it goes back to the guide.
+     *  - pending_ta whose TA is now the guide who REALLY approved it (on record in
+     *    system_logs as that same person): settled, as approveByGuide() now does.
+     *    A guide_status of 'approved' alone is not evidence of a decision.
+     *  - pending_guide with no guide left is NOT auto-approved; it is returned as
+     *    stranded so the caller can tell the admin.
+     *
+     * Runs inside the caller's transaction when there is one. Emails are the
+     * caller's job, after commit: pass 'notify' to sendRoutingNotifications().
+     *
+     * @return array {moved: int[] (to the HOD), returned: int[] (to the guide),
+     *                stranded: int[], notify: array<[kind, leaveId]>}
+     */
+    public function resettleAfterRoutingChange($studentId, $actorId, $oldGuideId, $oldTaId) {
+        $oldTaId = $oldTaId ? (int) $oldTaId : null;
+        $oldGuideId = $oldGuideId ? (int) $oldGuideId : null;
+        $result = ['moved' => [], 'returned' => [], 'stranded' => [], 'notify' => []];
+
+        $own = !$this->db->inTransaction();
+        if ($own) {
+            $this->db->beginTransaction();
+        }
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT la.id, la.status, la.guide_status, la.guide_approved_at,
+                        s.faculty_guide_id, s.ta_coordinator_id
+                 FROM leave_applications la
+                 JOIN students s ON s.id = la.student_id
+                 WHERE la.student_id = ? AND la.status IN ('pending_guide', 'pending_ta')
+                 FOR UPDATE");
+            $stmt->execute([(int) $studentId]);
+
+            foreach ($stmt->fetchAll() as $row) {
+                $leaveId = (int) $row['id'];
+                $guide = $row['faculty_guide_id'] ? (int) $row['faculty_guide_id'] : null;
+                $ta = $row['ta_coordinator_id'] ? (int) $row['ta_coordinator_id'] : null;
+
+                if ($row['status'] === 'pending_guide') {
+                    if ($guide === null) {
+                        $result['stranded'][] = $leaveId;
+                    } elseif ($guide !== $oldGuideId) {
+                        $result['notify'][] = ['guide', $leaveId];
+                    }
+                    continue;
+                }
+
+                // pending_ta: who, if anyone, actually approved the guide stage?
+                $approver = !empty($row['guide_approved_at']) ? $this->guideApproverId($leaveId) : null;
+
+                if ($ta === null) {
+                    if ($approver !== null) {
+                        $this->settleTaStage($leaveId, $actorId,
+                            'Auto-approved: no TA Coordinator is assigned to this student.',
+                            'no TA Coordinator assigned');
+                        $result['moved'][] = $leaveId;
+                        $result['notify'][] = ['hod', $leaveId];
+                    } elseif ($guide !== null) {
+                        $upd = $this->db->prepare(
+                            "UPDATE leave_applications
+                             SET status = 'pending_guide', guide_status = 'pending', guide_approved_at = NULL
+                             WHERE id = :id AND status = 'pending_ta'");
+                        $upd->execute([':id' => $leaveId]);
+                        if ($upd->rowCount() === 1) {
+                            $this->logAction($actorId, 'returned_to_guide', $leaveId,
+                                "Leave application ID $leaveId returned to the Faculty Guide: the TA Coordinator was "
+                                . 'removed and no guide had approved it (it was created at the TA stage when one '
+                                . 'person held both roles)');
+                            $result['returned'][] = $leaveId;
+                            $result['notify'][] = ['guide', $leaveId];
+                        }
+                    } else {
+                        $result['stranded'][] = $leaveId;
+                    }
+                    continue;
+                }
+
+                if ($ta === $guide && $approver !== null && $approver === $guide) {
+                    $this->settleTaStage($leaveId, $actorId, self::TA_AUTO_APPROVED_REMARK,
+                        'the guide who approved it is now also the TA Coordinator');
+                    $result['moved'][] = $leaveId;
+                    $result['notify'][] = ['hod', $leaveId];
+                } elseif ($ta !== $oldTaId) {
+                    $result['notify'][] = ['ta', $leaveId];
+                }
+            }
+
+            if ($own) {
+                $this->db->commit();
+            }
+        } catch (Exception $e) {
+            if ($own && $this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+
+        return $result;
+    }
+
+    /**
+     * users.id of whoever last approved this leave at the guide stage, from the
+     * audit trail; null when no human guide approval is on record.
+     */
+    public function guideApproverId($leaveId) {
+        $stmt = $this->db->prepare(
+            "SELECT user_id FROM system_logs
+             WHERE action = 'guide_approved' AND description REGEXP ?
+             ORDER BY id DESC LIMIT 1");
+        $stmt->execute(['Ref ID: ' . (int) $leaveId . '([^0-9]|$)']);
+        $id = $stmt->fetchColumn();
+        return ($id === false || $id === null) ? null : (int) $id;
+    }
+
+    /** Settle the TA stage of a pending_ta application and forward it to the HOD. */
+    private function settleTaStage($leaveId, $actorId, $remark, $why) {
+        $upd = $this->db->prepare(
+            "UPDATE leave_applications
+             SET ta_status = 'approved', ta_remarks = :remarks, ta_approved_at = NOW(),
+                 status = 'pending_hod'
+             WHERE id = :id AND status = 'pending_ta'");
+        $upd->execute([':remarks' => $remark, ':id' => (int) $leaveId]);
+        if ($upd->rowCount() === 1) {
+            $this->logAction($actorId, 'ta_stage_settled', $leaveId,
+                "TA stage settled after a guide/TA change for leave application ID $leaveId ($why); forwarded to HOD");
+        }
+    }
+
+    /**
+     * Email whoever now has to act on the applications resettleAfterRoutingChange()
+     * touched. Best-effort; call only after the routing change has committed.
+     */
+    public static function sendRoutingNotifications(array $notify) {
+        if (!$notify) {
+            return;
+        }
+        require_once __DIR__ . '/../includes/EmailService.php';
+        $leave = new Leave();
+        $email = new EmailService();
+        foreach ($notify as [$kind, $leaveId]) {
+            try {
+                $details = $leave->getById($leaveId);
+                if (!$details) {
+                    continue;
+                }
+                if ($kind === 'hod') {
+                    $email->sendTAApproval($details);
+                } elseif ($kind === 'ta') {
+                    $email->sendGuideApproval($details);
+                } elseif ($kind === 'guide') {
+                    $email->sendLeaveApplication($details, 'guide');
+                }
+            } catch (Throwable $e) {
+                logError("Routing-change notification ($kind) failed for leave $leaveId: " . $e->getMessage());
+            }
         }
     }
 
@@ -630,8 +778,11 @@ class Approval {
                     'approver_name' => 'System Administrator',
                     'approver_email' => null,
                     'status' => $leave['admin_status'] ?? 'pending',
-                    'remarks' => null,
+                    'remarks' => $leave['admin_remarks'],
+                    // A stored name, not a URL: link to it through
+                    // api/files/download.php?doc=dean_ap, never by path.
                     'document_path' => $leave['admin_document_path'],
+                    'has_document' => !empty($leave['admin_document_path']),
                     'approved_at' => $leave['admin_approved_at'],
                     'order' => 4
                 ];
@@ -673,9 +824,106 @@ class Approval {
     }
 
     /**
-     * Deduct leave balance after full approval
+     * Start a decision: open a transaction, lock the leave row, and return the
+     * application as it stands NOW.
+     *
+     * Only leave_applications is locked (MariaDB has no FOR UPDATE OF <table>,
+     * and locking the joined users rows would serialise every approval by the
+     * same guide for no reason). The lock is taken BEFORE the joined read, and
+     * a REPEATABLE READ snapshot starts at a transaction's first plain read, so
+     * the details below include whatever a competing approver committed while
+     * this request was waiting for the lock.
      */
-    private function deductLeaveBalance($leave) {
+    private function lockLeave($leaveId) {
+        $this->db->beginTransaction();
+        $this->inDecision = true;
+
+        $stmt = $this->db->prepare("SELECT id FROM leave_applications WHERE id = :leave_id FOR UPDATE");
+        $stmt->execute([':leave_id' => $leaveId]);
+        if (!$stmt->fetch()) {
+            throw new Exception("Leave application not found");
+        }
+
+        $leave = $this->getLeaveDetails($leaveId);
+        if (!$leave) {
+            throw new Exception("Leave application not found");
+        }
+        return $leave;
+    }
+
+    /** Commit the open decision. */
+    private function commitDecision() {
+        $this->db->commit();
+        $this->inDecision = false;
+    }
+
+    /**
+     * Refuse a decision on an application that is no longer at this stage —
+     * already decided by someone else, rejected, cancelled, or combined. This is
+     * what turns a double submission into a clean error instead of a second
+     * status change (and a second deduction).
+     */
+    private function requireStatus($leave, $expected, $stageLabel) {
+        if ($leave['status'] !== $expected) {
+            throw new Exception("This application is no longer awaiting $stageLabel approval (current status: "
+                . str_replace('_', ' ', $leave['status']) . "). It may already have been processed; please refresh the page.");
+        }
+    }
+
+    /**
+     * Apply a decision's UPDATE, but only if the row is still at $fromStatus.
+     * The row lock already guarantees this; the condition is a second line of
+     * defence so that a decision can never be applied to a row that moved on.
+     */
+    private function transition($leaveId, $fromStatus, $setSql, array $params) {
+        $sql = "UPDATE leave_applications
+                SET $setSql,
+                    updated_at = NOW()
+                WHERE id = :leave_id AND status = :from_status";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params + [
+            ':leave_id' => $leaveId,
+            ':from_status' => $fromStatus
+        ]);
+
+        if ($stmt->rowCount() !== 1) {
+            throw new Exception("This application has already been processed. Please refresh the page.");
+        }
+    }
+
+    /**
+     * Roll back whatever the failed decision had done and rethrow. Validation
+     * errors (plain Exceptions) used to skip the rollback and leave the
+     * transaction — and its row lock — open for the rest of the request.
+     */
+    private function abort(Throwable $e, $logPrefix, $userPrefix) {
+        if ($this->inDecision && $this->db->inTransaction()) {
+            $this->db->rollBack();
+        }
+        $this->inDecision = false;
+        if ($e instanceof PDOException) {
+            logError("$logPrefix: " . $e->getMessage());
+            throw new Exception("$userPrefix: " . $e->getMessage());
+        }
+        throw $e;
+    }
+
+    /**
+     * Deduct leave balance after full approval
+     *
+     * Called only inside a decision's transaction, after the status has moved
+     * to 'approved' under the row lock — so each leave is deducted exactly once.
+     * Nothing is ever refunded on rejection or cancellation for the same reason:
+     * only a leave that reached 'approved' was deducted, and those cannot be
+     * rejected or cancelled here. The one balance change a rejection or
+     * cancellation makes is the reverse: restoreCombinedSources() charges again
+     * the approved leaves a combined leave had replaced.
+     */
+    private function deductLeaveBalance($leave, $actorId) {
+        if (!in_array($leave['leave_type'], ['personal', 'medical', 'academic'], true)) {
+            throw new Exception("Unknown leave type: " . $leave['leave_type']);
+        }
         $field = $leave['leave_type'] . '_leaves';
 
         $sql = "UPDATE leave_balances
@@ -689,22 +937,30 @@ class Approval {
             ':student_id' => $leave['student_id']
         ]);
 
+        if ($stmt->rowCount() === 0) {
+            // Approval still stands (a missing balance row is an admin fix, not
+            // the approver's problem), but it must not pass silently.
+            logError("No leave_balances row for student_id {$leave['student_id']}; leave {$leave['id']} approved without a deduction");
+        }
+
         // Log the balance deduction
-        $this->logAction($leave['user_id'], 'leave_balance_deducted', $leave['id'],
-            "Deducted {$leave['total_days']} days from {$leave['leave_type']} leave balance");
+        $this->logAction($actorId, 'leave_balance_deducted', $leave['id'],
+            "Deducted {$leave['total_days']} days from {$leave['leave_type']} leave balance of student "
+            . $this->studentLabel($leave));
     }
 
     /**
      * Send notification (stub method for now)
      * TODO: Implement email notification using EmailService
+     *
+     * The real emails are sent by api/approvals/process.php after the decision
+     * commits. This only records the intent, under the ACTOR's id: the old entry
+     * was filed under the recipient, so it read as something they had done.
      */
-    private function sendNotification($userId, $notificationType, $leaveId, $role = null) {
-        // Log notification intent
-        $this->logAction($userId, 'notification_queued', $leaveId,
-            "Notification queued: Type=$notificationType, LeaveID=$leaveId, Role=$role");
-
-        // TODO: Implement actual email notification
-        // Example: EmailService::send($userId, $notificationType, $leaveId);
+    private function sendNotification($actorId, $recipientUserId, $notificationType, $leaveId, $role = null) {
+        $recipient = $role ? "role=$role" : "user #" . (int) $recipientUserId;
+        $this->logAction($actorId, 'notification_queued', $leaveId,
+            "Notification queued: Type=$notificationType, LeaveID=$leaveId, Recipient=$recipient");
 
         return true;
     }
@@ -712,76 +968,96 @@ class Approval {
     /**
      * Cancel any pending leave by Admin
      * Admin can cancel leaves at any stage in the approval process
+     *
+     * @param int $adminId users.id of the admin making the decision
      */
-    public function cancelByAdmin($leaveId, $remarks) {
+    public function cancelByAdmin($leaveId, $adminId, $remarks) {
         try {
-            $this->db->beginTransaction();
-
-            // Get leave details
-            $leave = $this->getLeaveDetails($leaveId);
-            if (!$leave) {
-                throw new Exception("Leave application not found");
-            }
-
-            // Check if leave is in a pending state (can be cancelled)
-            $pendingStatuses = Leave::PENDING_STATUSES;
-            if (!in_array($leave['status'], $pendingStatuses)) {
-                throw new Exception("Only pending leaves can be cancelled. Current status: " . $leave['status']);
-            }
-
             if (empty($remarks)) {
                 throw new Exception("Cancellation remarks are required");
             }
 
-            // Update leave application to cancelled status
-            $sql = "UPDATE leave_applications
-                    SET status = 'cancelled',
-                        admin_remarks = :remarks,
-                        admin_approved_at = NOW(),
-                        updated_at = NOW()
-                    WHERE id = :leave_id";
+            $leave = $this->lockLeave($leaveId);
 
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute([
+            // Only a pending leave can be cancelled. Checked under the row lock, so
+            // an approval that commits first turns this into an error rather than
+            // cancelling a leave whose days have just been deducted. Pending leaves
+            // were never deducted, so there is nothing to refund.
+            $pendingStatuses = Leave::PENDING_STATUSES;
+            if (!in_array($leave['status'], $pendingStatuses, true)) {
+                throw new Exception("Only pending leaves can be cancelled. Current status: " . $leave['status']);
+            }
+
+            // Update leave application to cancelled status
+            $this->transition($leaveId, $leave['status'],
+                "status = 'cancelled',
+                 admin_remarks = :remarks,
+                 admin_approved_at = NOW()", [
                 ':remarks' => $remarks,
-                ':leave_id' => $leaveId
             ]);
 
+            $restored = $this->restoreCombinedSources($leaveId, $adminId, 'cancelled');
+
             // Log action
-            $this->logAction($leave['user_id'], 'admin_cancelled', $leaveId,
-                "Admin cancelled leave application ID $leaveId for student {$leave['student_name']}. Previous status: {$leave['status']}");
+            $this->logAction($adminId, 'admin_cancelled', $leaveId,
+                "Admin cancelled leave application ID $leaveId for student " . $this->studentLabel($leave)
+                . ". Previous status: {$leave['status']}");
 
             // Send notification to student
-            $this->sendNotification($leave['user_id'], 'leave_cancelled', $leaveId);
+            $this->sendNotification($adminId, $leave['user_id'], 'leave_cancelled', $leaveId);
 
-            $this->db->commit();
+            $this->commitDecision();
 
             return [
                 'success' => true,
-                'message' => 'Leave application cancelled successfully'
+                'message' => 'Leave application cancelled successfully' . self::restoredNote($restored),
+                'previous_status' => $leave['status'],
+                'restored_leave_ids' => $restored
             ];
 
-        } catch (PDOException $e) {
-            $this->db->rollBack();
-            logError("Admin cancellation failed: " . $e->getMessage());
-            throw new Exception("Failed to cancel leave: " . $e->getMessage());
+        } catch (Throwable $e) {
+            $this->abort($e, 'Admin cancellation failed', 'Failed to cancel leave');
         }
     }
 
     /**
-     * Log action to system logs
+     * The leave just rejected or cancelled may be one that Leave::combineLeaves()
+     * made from approved leaves, whose days it refunded because the combined
+     * leave was to be charged instead. Those leaves go back to 'approved' and
+     * are charged again, in this decision's transaction and under the row lock
+     * lockLeave() holds on the combined leave. Called from every reject/cancel
+     * path, after the status change.
+     *
+     * @return int[] the leaves restored
      */
-    private function logAction($userId, $action, $referenceId, $description) {
-        $sql = "INSERT INTO system_logs (user_id, action, module, description, ip_address)
-                VALUES (:user_id, :action, :module, :description, :ip_address)";
+    private function restoreCombinedSources($leaveId, $actorId, $outcome) {
+        return (new Leave($this->db))->restoreCombinedSources($leaveId, $actorId, $outcome);
+    }
 
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute([
-            ':user_id' => $userId,
-            ':action' => $action,
-            ':module' => 'approvals',
-            ':description' => $description . " (Ref ID: $referenceId)",
-            ':ip_address' => $_SERVER['REMOTE_ADDR'] ?? null
-        ]);
+    /** Sentence for a decision's message naming the leaves restoreCombinedSources() put back. */
+    private static function restoredNote(array $restored) {
+        return $restored
+            ? '. Leave(s) #' . implode(', #', $restored) . ' that had been combined into it are approved again'
+              . ' and their days deducted.'
+            : '';
+    }
+
+    /** "Name (roll)" for audit descriptions, which are filed under the actor. */
+    private function studentLabel($leave) {
+        return $leave['student_name'] . (!empty($leave['roll_number']) ? " ({$leave['roll_number']})" : '')
+             . " [user #" . (int) $leave['user_id'] . "]";
+    }
+
+    /**
+     * Log action to system logs
+     *
+     * $actorId is the users.id of whoever made the decision — guide, TA, HOD or
+     * admin. HOD and admin decisions used to be filed under the STUDENT's id, so
+     * the audit trail showed students approving their own leave. Routed through
+     * logSystemAction() so an impersonated session is annotated with the real
+     * admin behind it.
+     */
+    private function logAction($actorId, $action, $referenceId, $description) {
+        logSystemAction($actorId, $action, 'approvals', $description . " (Ref ID: $referenceId)");
     }
 }

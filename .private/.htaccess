@@ -1,0 +1,11 @@
+# Private runtime data (medical certificates, Dean AP documents, logs, report
+# CSVs). Never served directly: files go out only through api/files/download.php,
+# which checks who is asking. Production nginx refuses this dot-directory by
+# its `location ~ /\.` rule; this file is the same guard for Apache on dev.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

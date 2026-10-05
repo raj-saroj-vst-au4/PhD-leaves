@@ -60,28 +60,28 @@ usort($timeline, function($a, $b) {
 });
 ?>
 
-<div class="mb-6">
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between">
-        <div>
-            <h1 class="text-3xl font-bold text-gray-900">Leave History</h1>
-            <p class="text-gray-600 mt-2">View all your leave applications</p>
-        </div>
-        <div class="mt-4 md:mt-0">
-            <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                <i class="fas fa-plus mr-2"></i>Apply Leave
-            </a>
-        </div>
+<div class="page-header">
+    <div>
+        <p class="page-eyebrow">Student</p>
+        <h1 class="page-title">Leave History</h1>
+        <p class="page-subtitle">View all your leave applications</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="btn btn-primary">
+            <i class="fas fa-plus"></i>Apply Leave
+        </a>
     </div>
 </div>
 
 <?php displayFlashMessage(); ?>
 
-<!-- Filters -->
-<div class="bg-white rounded-lg shadow-md p-6 mb-6">
-    <form method="GET" class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">Status</label>
-            <select name="status" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+<!-- Leave Applications Table -->
+<div class="card overflow-hidden">
+    <!-- Filters -->
+    <form method="GET" class="flex flex-col gap-3 border-b border-gray-100 px-5 py-4 sm:flex-row sm:flex-wrap sm:items-end sm:px-6">
+        <div class="sm:w-60">
+            <label for="filter_status" class="form-label">Status</label>
+            <select name="status" id="filter_status" class="form-select">
                 <option value="">All Status</option>
                 <option value="pending_routing" <?php echo $filterStatus === 'pending_routing' ? 'selected' : ''; ?>>Awaiting Guide/TA Change</option>
                 <option value="pending_guide" <?php echo $filterStatus === 'pending_guide' ? 'selected' : ''; ?>>Pending Guide</option>
@@ -90,81 +90,84 @@ usort($timeline, function($a, $b) {
                 <option value="pending_admin" <?php echo $filterStatus === 'pending_admin' ? 'selected' : ''; ?>>Pending Admin</option>
                 <option value="approved" <?php echo $filterStatus === 'approved' ? 'selected' : ''; ?>>Approved</option>
                 <option value="rejected" <?php echo $filterStatus === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
+                <option value="cancelled" <?php echo $filterStatus === 'cancelled' ? 'selected' : ''; ?>>Cancelled</option>
+                <option value="combined" <?php echo $filterStatus === 'combined' ? 'selected' : ''; ?>>Combined into another leave</option>
             </select>
         </div>
-        <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">Type</label>
-            <select name="type" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+        <div class="sm:w-48">
+            <label for="filter_type" class="form-label">Type</label>
+            <select name="type" id="filter_type" class="form-select">
                 <option value="">All Types</option>
                 <option value="personal" <?php echo $filterType === 'personal' ? 'selected' : ''; ?>>Personal</option>
                 <option value="medical" <?php echo $filterType === 'medical' ? 'selected' : ''; ?>>Medical</option>
                 <option value="academic" <?php echo $filterType === 'academic' ? 'selected' : ''; ?>>Academic</option>
             </select>
         </div>
-        <div class="flex items-end">
-            <button type="submit" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                <i class="fas fa-filter mr-2"></i>Filter
+        <div class="flex gap-2">
+            <button type="submit" class="btn btn-primary flex-1 sm:flex-none">
+                <i class="fas fa-filter"></i>Filter
             </button>
-        </div>
-        <div class="flex items-end">
-            <a href="<?php echo BASE_URL; ?>/student/leave_history.php" class="w-full text-center px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">
-                <i class="fas fa-times mr-2"></i>Clear
+            <a href="<?php echo BASE_URL; ?>/student/leave_history.php" class="btn btn-ghost flex-1 sm:flex-none">
+                <i class="fas fa-times"></i>Clear
             </a>
         </div>
+        <?php if (!empty($adjustments)): ?>
+            <p class="flex items-center gap-2 text-xs text-gray-500 sm:ml-auto sm:self-center">
+                <span class="inline-block h-2.5 w-2.5 rounded-full bg-indigo-200 ring-1 ring-indigo-300"></span>
+                Tinted rows are balance adjustments made by the office.
+            </p>
+        <?php endif; ?>
     </form>
-</div>
 
-<!-- Leave Applications Table -->
-<div class="bg-white rounded-lg shadow-md overflow-hidden">
     <?php if (empty($timeline)): ?>
-        <div class="empty-state m-6">
-            <i class="fas fa-inbox empty-state-icon text-6xl"></i>
+        <div class="empty-state m-5 sm:m-6">
+            <div class="empty-state-icon"><i class="fas fa-inbox"></i></div>
             <p class="empty-state-title">No leave applications found</p>
             <p class="empty-state-description">You haven't submitted any leave applications yet, or no applications match your current filters.</p>
-            <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="mt-4 inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-                <i class="fas fa-plus mr-2"></i>Apply for Leave
+            <a href="<?php echo BASE_URL; ?>/student/apply_leave.php" class="btn btn-primary mt-5">
+                <i class="fas fa-plus"></i>Apply for Leave
             </a>
         </div>
     <?php else: ?>
         <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200" id="leaveTable">
-                <thead class="bg-gray-50">
+            <table class="table-modern" id="leaveTable">
+                <thead>
                     <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Dates</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Days</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Applied</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        <th>Type</th>
+                        <th>Dates</th>
+                        <th>Days</th>
+                        <th>Reason</th>
+                        <th>Status</th>
+                        <th>Applied</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
+                <tbody>
                     <?php foreach ($timeline as $item): ?>
                         <?php if ($item['type'] === 'leave'): ?>
                             <?php $leave = $item['data']; ?>
-                            <tr class="hover:bg-gray-50">
-                                <td class="px-6 py-4 whitespace-nowrap">
+                            <tr>
+                                <td class="whitespace-nowrap">
                                     <?php echo getLeaveTypeBadge($leave['leave_type']); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                    <?php echo formatDate($leave['start_date']); ?><br>
-                                    <span class="text-gray-500">to</span> <?php echo formatDate($leave['end_date']); ?>
+                                <td class="whitespace-nowrap">
+                                    <span class="block font-medium text-gray-900"><?php echo formatDate($leave['start_date']); ?></span>
+                                    <span class="block text-xs text-gray-500">to <?php echo formatDate($leave['end_date']); ?></span>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                                <td class="whitespace-nowrap font-semibold text-gray-900">
                                     <?php echo $leave['total_days']; ?>
                                 </td>
-                                <td class="px-6 py-4 text-sm text-gray-700 max-w-xs truncate">
+                                <td class="max-w-xs truncate text-gray-600">
                                     <?php echo sanitize(substr($leave['reason'], 0, 50)) . (strlen($leave['reason']) > 50 ? '...' : ''); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
+                                <td class="whitespace-nowrap">
                                     <?php echo getStatusBadge($leave['status']); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                <td class="whitespace-nowrap text-gray-500">
                                     <?php echo timeAgo($leave['created_at']); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm">
-                                    <button onclick="viewLeaveDetails(<?php echo $leave['id']; ?>)" class="text-blue-600 hover:text-blue-800">
+                                <td class="whitespace-nowrap">
+                                    <button onclick="viewLeaveDetails(<?php echo (int) $leave['id']; ?>)" class="btn btn-secondary btn-sm">
                                         <i class="fas fa-eye"></i> View
                                     </button>
                                 </td>
@@ -173,38 +176,41 @@ usort($timeline, function($a, $b) {
                             <?php $adj = $item['data']; ?>
                             <?php
                                 $adjAmount = (float)$adj['adjustment_amount'];
-                                $adjColor = $adjAmount > 0 ? 'text-green-600' : 'text-red-600';
+                                $adjColor = $adjAmount > 0 ? 'text-emerald-600' : 'text-rose-600';
                                 $adjPrefix = $adjAmount > 0 ? '+' : '';
                             ?>
-                            <tr class="hover:bg-indigo-50 bg-indigo-50/30">
-                                <td class="px-6 py-4 whitespace-nowrap">
+                            <tr class="bg-indigo-50/40 hover:bg-indigo-50">
+                                <td class="whitespace-nowrap">
                                     <?php echo getLeaveTypeBadge($adj['leave_type']); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-indigo-600 font-medium">
+                                <td class="whitespace-nowrap font-medium text-indigo-700">
                                     <i class="fas fa-balance-scale mr-1"></i>Balance Adjustment
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold <?php echo $adjColor; ?>">
+                                <td class="whitespace-nowrap font-semibold <?php echo $adjColor; ?>">
                                     <?php echo $adjPrefix . number_format($adjAmount, 1); ?>
                                 </td>
-                                <td class="px-6 py-4 text-sm text-gray-700 max-w-xs truncate">
+                                <td class="max-w-xs truncate text-gray-600">
                                     <?php echo sanitize(substr($adj['remarks'], 0, 50)) . (strlen($adj['remarks']) > 50 ? '...' : ''); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap">
-                                    <span class="px-2 py-1 text-xs font-semibold rounded-full" style="background-color: #e0e7ff; color: #4338ca;">
-                                        <i class="fas fa-user-shield mr-1"></i>Admin Adjusted
+                                <td class="whitespace-nowrap">
+                                    <span class="badge bg-indigo-50 text-indigo-700 ring-indigo-200">
+                                        <i class="fas fa-user-shield mr-1 text-xs"></i>Admin Adjusted
                                     </span>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                <td class="whitespace-nowrap text-gray-500">
                                     <?php echo timeAgo($adj['created_at']); ?>
                                 </td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                                <td class="whitespace-nowrap">
+                                    <?php /* viewAdjustmentDetails() puts these into innerHTML, so
+                                       the free text goes as HTML escaped exactly once (remarks
+                                       are stored escaped by sanitize(); decode first). */ ?>
                                     <button onclick="viewAdjustmentDetails(<?php echo htmlspecialchars(json_encode([
                                         'leave_type' => getLeaveTypeLabel($adj['leave_type']),
                                         'amount' => $adjPrefix . number_format($adjAmount, 1),
-                                        'remarks' => $adj['remarks'],
-                                        'adjusted_by' => $adj['adjusted_by_name'] ?? 'Admin',
+                                        'remarks' => sanitize(html_entity_decode((string) $adj['remarks'], ENT_QUOTES, 'UTF-8')),
+                                        'adjusted_by' => sanitize($adj['adjusted_by_name'] ?? 'Admin'),
                                         'date' => formatDateTime($adj['created_at'])
-                                    ]), ENT_QUOTES, 'UTF-8'); ?>)" class="text-indigo-600 hover:text-indigo-800">
+                                    ], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>)" class="btn btn-sm bg-white text-indigo-700 shadow-sm ring-1 ring-inset ring-indigo-200 hover:bg-indigo-50">
                                         <i class="fas fa-eye"></i> View
                                     </button>
                                 </td>
@@ -218,15 +224,18 @@ usort($timeline, function($a, $b) {
 </div>
 
 <!-- Leave Details Modal -->
-<div id="leaveModal" class="hidden modal-backdrop">
+<div id="leaveModal" class="hidden modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="leaveModalTitle">
     <div class="modal-content" style="max-width: 48rem;">
-        <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-            <h3 class="text-xl font-semibold text-gray-900">Leave Application Details</h3>
-            <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
-                <i class="fas fa-times text-xl"></i>
+        <div class="flex items-center justify-between gap-4 border-b border-gray-100 px-6 py-4">
+            <div class="flex items-center gap-3">
+                <span class="icon-chip-sm chip-brand"><i class="fas fa-file-alt"></i></span>
+                <h3 id="leaveModalTitle" class="text-lg font-semibold text-gray-900">Leave Application Details</h3>
+            </div>
+            <button type="button" onclick="closeModal()" class="btn-icon" title="Close" aria-label="Close">
+                <i class="fas fa-times"></i>
             </button>
         </div>
-        <div id="modalContent" class="px-6 py-4">
+        <div id="modalContent" class="px-6 py-5">
             <!-- Content will be loaded dynamically -->
         </div>
     </div>
@@ -248,7 +257,7 @@ $(document).ready(function() {
 
 function viewLeaveDetails(leaveId) {
     document.getElementById('leaveModal').classList.remove('hidden');
-    document.getElementById('modalContent').innerHTML = '<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-4xl text-blue-600"></i></div>';
+    document.getElementById('modalContent').innerHTML = '<div class="flex justify-center py-10"><i class="fas fa-spinner fa-spin text-3xl text-brand-600"></i></div>';
 
     fetch(`<?php echo BASE_URL; ?>/api/leaves/details.php?id=${leaveId}`)
         .then(response => response.json())
@@ -256,52 +265,52 @@ function viewLeaveDetails(leaveId) {
             if (data.success) {
                 displayLeaveDetails(data.data);
             } else {
-                document.getElementById('modalContent').innerHTML = '<div class="text-center text-red-600 py-8">Error loading details</div>';
+                document.getElementById('modalContent').innerHTML = '<div class="alert alert-error"><i class="fas fa-exclamation-circle mt-0.5"></i><p>Error loading details</p></div>';
             }
         })
         .catch(error => {
-            document.getElementById('modalContent').innerHTML = '<div class="text-center text-red-600 py-8">Error loading details</div>';
+            document.getElementById('modalContent').innerHTML = '<div class="alert alert-error"><i class="fas fa-exclamation-circle mt-0.5"></i><p>Error loading details</p></div>';
         });
 }
 
 function displayLeaveDetails(leave) {
     let html = `
         <div class="space-y-6">
-            <div class="grid grid-cols-2 gap-4">
+            <dl class="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
                 <div>
-                    <p class="text-sm text-gray-600">Leave Type</p>
-                    <p class="font-semibold">${leave.leave_type_label}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Leave Type</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${leave.leave_type_label}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Status</p>
-                    <p>${leave.status_badge}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Status</dt>
+                    <dd class="mt-1">${leave.status_badge}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Start Date</p>
-                    <p class="font-semibold">${leave.start_date_formatted}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Total Days</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${leave.total_days}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">End Date</p>
-                    <p class="font-semibold">${leave.end_date_formatted}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Start Date</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${leave.start_date_formatted}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Total Days</p>
-                    <p class="font-semibold">${leave.total_days}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">End Date</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${leave.end_date_formatted}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Applied On</p>
-                    <p class="font-semibold">${leave.created_at_formatted}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Applied On</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${leave.created_at_formatted}</dd>
                 </div>
-            </div>
+            </dl>
 
             <div>
-                <p class="text-sm text-gray-600 mb-2">Reason</p>
-                <p class="p-3 bg-gray-50 rounded-lg">${leave.reason}</p>
+                <p class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Reason</p>
+                <p class="rounded-xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-inset ring-gray-100">${leave.reason}</p>
             </div>
 
             ${leave.approval_chain ? `
             <div>
-                <h4 class="font-semibold text-gray-900 mb-3">Approval Chain</h4>
+                <h4 class="mb-3 text-sm font-semibold text-gray-900">Approval Chain</h4>
                 ${leave.approval_chain}
             </div>
             ` : ''}
@@ -313,35 +322,34 @@ function displayLeaveDetails(leave) {
 function viewAdjustmentDetails(data) {
     document.getElementById('leaveModal').classList.remove('hidden');
 
-    let amountClass = parseFloat(data.amount) > 0 ? 'text-green-600' : 'text-red-600';
+    let amountClass = parseFloat(data.amount) > 0 ? 'text-emerald-600' : 'text-rose-600';
     let html = `
         <div class="space-y-6">
-            <div class="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
-                <p class="text-sm text-indigo-800 font-medium">
-                    <i class="fas fa-balance-scale mr-1"></i>This is an admin balance adjustment, not a leave application.
-                </p>
+            <div class="flex items-start gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3.5 text-sm font-medium text-indigo-800">
+                <i class="fas fa-balance-scale mt-0.5"></i>
+                <p>This is an admin balance adjustment, not a leave application.</p>
             </div>
-            <div class="grid grid-cols-2 gap-4">
+            <dl class="grid grid-cols-2 gap-x-6 gap-y-4">
                 <div>
-                    <p class="text-sm text-gray-600">Leave Type</p>
-                    <p class="font-semibold">${data.leave_type}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Leave Type</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${data.leave_type}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Adjustment Amount</p>
-                    <p class="font-semibold ${amountClass}">${data.amount} days</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Adjustment Amount</dt>
+                    <dd class="mt-1 text-sm font-semibold ${amountClass}">${data.amount} days</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Adjusted By</p>
-                    <p class="font-semibold">${data.adjusted_by}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Adjusted By</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${data.adjusted_by}</dd>
                 </div>
                 <div>
-                    <p class="text-sm text-gray-600">Date</p>
-                    <p class="font-semibold">${data.date}</p>
+                    <dt class="text-xs font-medium uppercase tracking-wide text-gray-500">Date</dt>
+                    <dd class="mt-1 text-sm font-semibold text-gray-900">${data.date}</dd>
                 </div>
-            </div>
+            </dl>
             <div>
-                <p class="text-sm text-gray-600 mb-2">Remarks</p>
-                <p class="p-3 bg-gray-50 rounded-lg">${data.remarks}</p>
+                <p class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Remarks</p>
+                <p class="rounded-xl bg-gray-50 p-4 text-sm text-gray-700 ring-1 ring-inset ring-gray-100">${data.remarks}</p>
             </div>
         </div>
     `;
@@ -355,6 +363,13 @@ function closeModal() {
 // Close modal on outside click
 document.getElementById('leaveModal')?.addEventListener('click', function(e) {
     if (e.target === this) {
+        closeModal();
+    }
+});
+
+// Close modal on Escape
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
         closeModal();
     }
 });

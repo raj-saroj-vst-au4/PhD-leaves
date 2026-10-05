@@ -46,11 +46,14 @@ try {
     $approvalChainResult = $approval->getApprovalChain($leaveId);
     $approvalChain = $approvalChainResult['approval_chain'] ?? [];
 
-    // Format response
+    // Format response. Every caller (student/leave_history.php, hod/all_leaves.php,
+    // admin/leave_management.php) drops these fields straight into innerHTML, so
+    // the free-text ones are returned as escaped HTML — a student's reason is
+    // otherwise markup running in the HOD's or admin's session.
     $response = [
         'id' => $leaveDetails['id'],
-        'student_name' => $leaveDetails['student_name'] ?? '',
-        'roll_number' => $leaveDetails['roll_number'] ?? '',
+        'student_name' => detailsHtml($leaveDetails['student_name'] ?? ''),
+        'roll_number' => detailsHtml($leaveDetails['roll_number'] ?? ''),
         'leave_type' => $leaveDetails['leave_type'],
         'leave_type_label' => getLeaveTypeLabel($leaveDetails['leave_type']),
         'start_date' => $leaveDetails['start_date'],
@@ -58,7 +61,7 @@ try {
         'end_date' => $leaveDetails['end_date'],
         'end_date_formatted' => formatDate($leaveDetails['end_date']),
         'total_days' => $leaveDetails['total_days'],
-        'reason' => $leaveDetails['reason'],
+        'reason' => detailsHtml($leaveDetails['reason'], true),
         'status' => $leaveDetails['status'],
         'status_badge' => getStatusBadge($leaveDetails['status']),
         'created_at' => $leaveDetails['created_at'],
@@ -71,6 +74,18 @@ try {
 } catch (Exception $e) {
     logError("Get leave details error: " . $e->getMessage());
     jsonResponse(false, 'An error occurred while retrieving leave details', [], 500);
+}
+
+/**
+ * Stored text as HTML, escaped exactly once. Values are stored HTML-escaped by
+ * sanitize() on input, but not all of them (combined leaves, older rows), so
+ * decode first: escaping an escaped value shows "&#039;", and passing a raw one
+ * through lets markup in.
+ */
+function detailsHtml($value, $multiline = false) {
+    $plain = html_entity_decode((string) $value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $html = htmlspecialchars($plain, ENT_QUOTES, 'UTF-8');
+    return $multiline ? nl2br($html) : $html;
 }
 
 function formatApprovalChain($chain) {
@@ -99,7 +114,7 @@ function formatApprovalChain($chain) {
         $html .= '<div class="flex items-center justify-between mb-2">';
         $html .= '<div class="flex items-center">';
         $html .= $icon;
-        $html .= '<span class="ml-2 font-semibold">' . htmlspecialchars($step['stage']) . '</span>';
+        $html .= '<span class="ml-2 font-semibold">' . detailsHtml($step['stage']) . '</span>';
         $html .= '</div>';
 
         if ($step['status'] !== 'pending' && !empty($step['approved_at'])) {
@@ -109,11 +124,11 @@ function formatApprovalChain($chain) {
         $html .= '</div>';
 
         if (!empty($step['approver_name'])) {
-            $html .= '<p class="text-sm text-gray-700">By: ' . htmlspecialchars($step['approver_name']) . '</p>';
+            $html .= '<p class="text-sm text-gray-700">By: ' . detailsHtml($step['approver_name']) . '</p>';
         }
 
         if (!empty($step['remarks'])) {
-            $html .= '<p class="text-sm text-gray-600 mt-2 italic">"' . htmlspecialchars($step['remarks']) . '"</p>';
+            $html .= '<p class="text-sm text-gray-600 mt-2 italic">"' . detailsHtml($step['remarks'], true) . '"</p>';
         }
 
         if ($step['stage'] === 'TA Coordinator' && !empty($step['no_duty_confirmed'])) {
@@ -121,7 +136,7 @@ function formatApprovalChain($chain) {
         }
 
         if ($step['stage'] === 'HOD' && !empty($step['payment_status'])) {
-            $html .= '<p class="text-xs text-blue-600 mt-1"><i class="fas fa-money-bill-wave"></i> Payment Status: ' . ucwords(str_replace('_', ' ', $step['payment_status'])) . '</p>';
+            $html .= '<p class="text-xs text-blue-600 mt-1"><i class="fas fa-money-bill-wave"></i> Payment Status: ' . detailsHtml(ucwords(str_replace('_', ' ', $step['payment_status']))) . '</p>';
         }
 
         $html .= '</div>';

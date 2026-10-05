@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import struct
 import time
@@ -21,8 +22,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .config import get_settings
-from .db import audit, connection, get_float_setting, get_int_setting, get_setting, query_all, query_one
-from .timewindow import DayWindow, now_ist, resolve_window, today_ist
+from .db import (
+    audit, connection, execute, get_float_setting, get_int_setting, get_setting, query_all, query_one,
+)
+from .timewindow import IST, DayWindow, now_ist, resolve_window, today_ist
 
 
 class MarkError(Exception):
@@ -169,28 +172,212 @@ def check_not_already_marked(student_id: int, day: date) -> None:
         raise MarkError(409, "ALREADY_MARKED", f"You have already been marked present today at {when}.")
 
 
-def check_attempt_budget(student_id: int, day: date) -> None:
-    limit = get_int_setting("max_attempts_per_day", 5)
+# fail_codes that record a SERVER-side problem or a refusal, not a judged
+# attempt. They are kept as evidence but never cost the student a try, and the
+# office's "failed attempts" figures leave them out. VERIFYING is an attempt in
+# flight; one still VERIFYING after STALE_VERIFYING_MINUTES was orphaned by a
+# crash or an OOM kill, and stops counting too.
+NOT_COUNTED_CODES = ("ENGINE_ERROR", "SERVER_ERROR", "TOO_MANY_ATTEMPTS")
+STALE_VERIFYING_MINUTES = 5
+
+# SQL for "this att_attempts row (alias a) is a real failed attempt" — shared by
+# the dashboard and the monthly report so both agree with the budget.
+REAL_FAILURE_SQL = (
+    "a.verdict='fail' AND COALESCE(a.fail_code,'') NOT IN "
+    "('ENGINE_ERROR','SERVER_ERROR','TOO_MANY_ATTEMPTS','VERIFYING')"
+)
+
+
+def _counted_attempts(student_id: int, day: date) -> int:
+    # What uses up the daily budget: every judged failure AND every result sent
+    # to office review. Pending used to be free, which let a lookalike keep
+    # retrying from the review band (0.32-0.42) until one burst crossed 0.42.
+    #
     # Only attempts made SINCE the office last voided this student-day count.
     # Voiding is the "let them mark again" action, so it has to clear the budget
     # too, or a student who burned their tries stays locked out after a reset.
     # Evidence is never destroyed — the old attempts stay, they just stop
     # counting. Both timestamps come from the same DB clock, so comparing them
-    # needs no timezone conversion.
+    # needs no timezone conversion. An attempt still being verified is stored
+    # as a 'fail' (see reserve_attempt), so it counts from the moment it starts.
     row = query_one(
         "SELECT COUNT(*) AS n FROM att_attempts a "
-        "WHERE a.student_id=%s AND a.date_ist=%s AND a.verdict='fail' "
+        "WHERE a.student_id=%s AND a.date_ist=%s AND a.verdict IN ('fail','pending') "
+        "  AND COALESCE(a.fail_code,'') NOT IN ('ENGINE_ERROR','SERVER_ERROR','TOO_MANY_ATTEMPTS') "
+        "  AND NOT (a.fail_code='VERIFYING' AND a.at_utc < NOW() - INTERVAL %s MINUTE) "
         "  AND a.at_utc > COALESCE(("
         "        SELECT MAX(r.created_at) FROM att_records r "
         "        WHERE r.student_id=a.student_id AND r.date_ist=a.date_ist AND r.kind='void'"
         "      ), '1000-01-01')",
-        (student_id, day),
+        (student_id, day, STALE_VERIFYING_MINUTES),
     )
-    if row and int(row["n"]) >= limit:
-        raise MarkError(
-            429, "TOO_MANY_ATTEMPTS",
-            "Too many failed attempts today. Please see the SOM office.",
-        )
+    return int(row["n"]) if row else 0
+
+
+def _too_many_attempts() -> MarkError:
+    return MarkError(
+        429, "TOO_MANY_ATTEMPTS",
+        "Too many attempts today. Please see the SOM office.",
+    )
+
+
+def check_attempt_budget(student_id: int, day: date) -> None:
+    """Early, friendly refusal before any camera work. Not the guard itself:
+    parallel requests can all pass this check together — reserve_attempt()
+    is what actually holds the limit."""
+    if _counted_attempts(student_id, day) >= get_int_setting("max_attempts_per_day", 5):
+        raise _too_many_attempts()
+
+
+def reserve_attempt(
+    *,
+    student_id: int,
+    day: date,
+    source_ip: str | None,
+    device_id: int | None,
+    challenge_spec: str | None,
+    user_agent: str | None,
+) -> int:
+    """Claim one slot of today's attempt budget before the face is judged.
+
+    Count-then-insert let a burst of parallel requests all read "4 of 5 used"
+    and all go on to face verification. This inserts FIRST (as a 'fail' with
+    fail_code VERIFYING, so it already counts) and counts SECOND, each
+    statement committing on its own. Of N racing requests, the k-th row to
+    commit is counted by its own request together with every row committed
+    before it, so at most `limit` requests can ever see a count within the
+    limit. No lock needed — and none available: the append-only DB user has no
+    DELETE, and SELECT … FOR UPDATE on students would need UPDATE there.
+
+    The error is always on the safe side: racers can over-refuse (each may see
+    the others' reservations), never over-grant. A refused reservation stays
+    on record as TOO_MANY_ATTEMPTS (which does not itself count); it only
+    arises from requests racing past check_attempt_budget, which the page never
+    does. Returns the id to finish with finish_attempt() — and every caller
+    must finish it, or settle_failed() it, on every path.
+    """
+    limit = get_int_setting("max_attempts_per_day", 5)
+    with connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO att_attempts (student_id, date_ist, source_ip, device_id, verdict, "
+                "fail_code, challenge_spec, user_agent) VALUES (%s,%s,%s,%s,'fail','VERIFYING',%s,%s)",
+                (student_id, day, source_ip, device_id, challenge_spec, (user_agent or "")[:512]),
+            )
+            attempt_id = cur.lastrowid
+            conn.commit()
+
+    if _counted_attempts(student_id, day) > limit:
+        execute("UPDATE att_attempts SET fail_code='TOO_MANY_ATTEMPTS' WHERE id=%s", (attempt_id,))
+        raise _too_many_attempts()
+    return attempt_id
+
+
+def settle_failed(attempt_id: int) -> None:
+    """The request died after reserving an attempt. Never leave the row saying
+    VERIFYING (it would count for 5 minutes, and look like a failure after), and
+    never leave a 'pass' with no attendance record behind it: that becomes a
+    pending review, so the office's Approve creates the record and the student
+    is not silently marked absent by a server fault."""
+    execute(
+        "UPDATE att_attempts SET verdict='fail', fail_code='SERVER_ERROR' "
+        "WHERE id=%s AND fail_code='VERIFYING'",
+        (attempt_id,),
+    )
+    execute(
+        "UPDATE att_attempts a SET a.verdict='pending', a.fail_code='SERVER_ERROR' "
+        "WHERE a.id=%s AND a.verdict='pass' "
+        "AND NOT EXISTS (SELECT 1 FROM att_records r WHERE r.attempt_id=a.id)",
+        (attempt_id,),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Challenge issue (rate-limited)
+# ---------------------------------------------------------------------------
+#
+# There are only ten sequences, so an unlimited supply of challenges would let
+# a client re-roll until it drew one its stock photos happen to fit. Issue is
+# capped per minute and per day (a multiple of the attempt budget: tapping
+# Mark and then cancelling costs a challenge but not an attempt). A void by the
+# office resets the daily count along with the attempt budget.
+CHALLENGES_PER_MINUTE = 4
+CHALLENGES_PER_ATTEMPT = 3
+
+
+def issue_challenge(student_id: int, device_id: int, steps: list[str], day: date,
+                    ttl_seconds: int, token_hash: str) -> None:
+    """Store a challenge, refusing (and removing it again) past either cap.
+    Insert-then-count, like reserve_attempt, so racing requests cannot
+    overshoot."""
+    per_day = max(10, CHALLENGES_PER_ATTEMPT * get_int_setting("max_attempts_per_day", 5))
+    challenge_id = execute(
+        "INSERT INTO att_challenges (token_hash, student_id, device_id, challenge, expires_at) "
+        "VALUES (%s,%s,%s,%s,DATE_ADD(NOW(), INTERVAL %s SECOND))",
+        (token_hash, student_id, device_id, ",".join(steps), ttl_seconds),
+    )
+    # IST midnight of `day`, as the UTC instant this backend's session uses.
+    midnight = (datetime.combine(day, datetime.min.time(), tzinfo=IST)
+                .astimezone(timezone.utc).replace(tzinfo=None))
+    row = query_one(
+        "SELECT "
+        "  SUM(c.created_at > NOW() - INTERVAL 60 SECOND) AS last_minute, "
+        "  SUM(c.created_at >= %s AND c.created_at > COALESCE(("
+        "        SELECT MAX(r.created_at) FROM att_records r "
+        "        WHERE r.student_id=%s AND r.date_ist=%s AND r.kind='void'"
+        "      ), '1000-01-01')) AS today "
+        "FROM att_challenges c WHERE c.student_id=%s AND c.created_at >= %s - INTERVAL 1 DAY",
+        (midnight, student_id, day, student_id, midnight),
+    )
+    last_minute = int(row["last_minute"] or 0) if row else 0
+    today = int(row["today"] or 0) if row else 0
+    if last_minute > CHALLENGES_PER_MINUTE or today > per_day:
+        execute("DELETE FROM att_challenges WHERE id=%s", (challenge_id,))
+        if today > per_day:
+            raise MarkError(429, "TOO_MANY_CHALLENGES",
+                            "Too many attempts started today. Please see the SOM office.")
+        raise MarkError(429, "TOO_MANY_CHALLENGES",
+                        "Please wait a minute before trying again.")
+
+
+# ---------------------------------------------------------------------------
+# Frame replay
+# ---------------------------------------------------------------------------
+#
+# Every submitted frame's SHA-256 is kept per student (att_frame_hashes), and a
+# burst containing any frame this student has sent before is refused. That
+# stops re-submitting an earlier burst (or enrollment frames) as-is. It does
+# not stop re-encoded copies — see the RUNBOOK's threat model.
+
+def _missing_table(exc: Exception) -> bool:
+    return getattr(exc, "args", (None,))[0] == 1146
+
+
+def record_frame_hashes(student_id: int, attempt_id: int | None, hashes: list[str],
+                        *, allow_seen: bool = False) -> bool:
+    """Remember these frame hashes for the student. Returns False if any was
+    already on record (a replay) and allow_seen is False; in that case nothing
+    is written. One multi-row INSERT, so it is atomic against a parallel replay
+    of the same burst (uk_student_sha)."""
+    if not hashes:
+        return True
+    rows = ",".join(["(%s,%s,%s)"] * len(hashes))
+    params: list = []
+    for h in hashes:
+        params += [student_id, h, attempt_id]
+    verb = "INSERT IGNORE" if allow_seen else "INSERT"
+    try:
+        execute(f"{verb} INTO att_frame_hashes (student_id, sha256, attempt_id) VALUES {rows}", params)
+    except Exception as exc:
+        if _missing_table(exc):
+            # Deployed ahead of 2026_09_23_attendance_backend.sql: no replay
+            # check yet, but marking must keep working.
+            logging.getLogger(__name__).warning("att_frame_hashes missing; replay check skipped")
+            return True
+        if not allow_seen and ("Duplicate" in str(exc) or getattr(exc, "args", (None,))[0] == 1062):
+            return False
+        raise
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -220,12 +407,9 @@ def store_frames(student_roll: str, day: date, images: list[bytes], kind: str = 
     return rel, primary_hash
 
 
-def record_attempt(
+def finish_attempt(
+    attempt_id: int,
     *,
-    student_id: int | None,
-    day: date,
-    source_ip: str | None,
-    device_id: int | None,
     verdict: str,
     fail_code: str | None,
     match_score: float | None = None,
@@ -233,30 +417,22 @@ def record_attempt(
     pose_ok: bool | None = None,
     crossmatch_student_id: int | None = None,
     crossmatch_score: float | None = None,
-    challenge_spec: str | None = None,
     frames_dir: str | None = None,
-    user_agent: str | None = None,
     detail: dict | None = None,
-) -> int:
-    with connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO att_attempts (student_id, date_ist, source_ip, device_id, verdict, "
-                "fail_code, match_score, liveness_score, pose_ok, crossmatch_student_id, "
-                "crossmatch_score, challenge_spec, frames_dir, user_agent, detail) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    student_id, day, source_ip, device_id, verdict, fail_code,
-                    match_score, liveness_score,
-                    None if pose_ok is None else int(pose_ok),
-                    crossmatch_student_id, crossmatch_score, challenge_spec,
-                    frames_dir, (user_agent or "")[:512],
-                    json.dumps(detail, default=str) if detail else None,
-                ),
-            )
-            attempt_id = cur.lastrowid
-            conn.commit()
-            return attempt_id
+) -> None:
+    """Write the outcome onto an attempt opened by reserve_attempt()."""
+    execute(
+        "UPDATE att_attempts SET verdict=%s, fail_code=%s, match_score=%s, liveness_score=%s, "
+        "pose_ok=%s, crossmatch_student_id=%s, crossmatch_score=%s, frames_dir=%s, detail=%s "
+        "WHERE id=%s",
+        (
+            verdict, fail_code, match_score, liveness_score,
+            None if pose_ok is None else int(pose_ok),
+            crossmatch_student_id, crossmatch_score, frames_dir,
+            json.dumps(detail, default=str) if detail else None,
+            attempt_id,
+        ),
+    )
 
 
 def insert_record(
@@ -362,12 +538,71 @@ def active_template(student_id: int) -> dict | None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Template retention
+# ---------------------------------------------------------------------------
+#
+# Only an ACTIVE template is ever matched against, so a revoked one is
+# biometric data with no remaining purpose. Revoking therefore erases the
+# embeddings on the spot; the row itself stays (append-style) as the record of
+# who enrolled the student, when, and why it ended. The RUNBOOK has always told
+# the office "delete a leaver's template via revoke" — until now revoke only
+# flipped the status and the vectors stayed in the table indefinitely.
+
+def revoke_templates(student_id: int, *, reason: str, revoked_by: int | None = None) -> int:
+    """Revoke the student's active template(s) and erase the embeddings."""
+    return execute(
+        "UPDATE att_face_templates SET status='revoked', revoked_at=NOW(), revoked_by=%s, "
+        "revoke_reason=%s, embeddings='[]', embedding_count=0 "
+        "WHERE student_id=%s AND status='active'",
+        (revoked_by, reason, student_id),
+    )
+
+
+def revoke_devices(student_id: int, *, revoked_by: int | None = None) -> int:
+    return execute(
+        "UPDATE att_devices SET status='revoked', revoked_at=NOW(), revoked_by=%s "
+        "WHERE student_id=%s AND status='active'",
+        (revoked_by, student_id),
+    )
+
+
+def purge_templates() -> dict:
+    """Nightly biometric clean-up (runs with the frame purge).
+
+    1. Leavers: a student whose portal account is deactivated can no longer
+       sign in to mark, so their template and bound phone are revoked — the
+       office's manual "revoke a leaver" step, made impossible to forget. If
+       the account is reactivated they re-enroll at the office.
+    2. Anything revoked that still carries embeddings (rows revoked before
+       erase-on-revoke existed) is erased.
+    """
+    leavers = query_all(
+        "SELECT DISTINCT t.student_id FROM att_face_templates t "
+        "JOIN students s ON s.id=t.student_id JOIN users u ON u.id=s.user_id "
+        "WHERE t.status='active' AND u.is_active=0"
+    )
+    for row in leavers:
+        revoke_templates(row["student_id"], reason="Portal account deactivated (nightly purge)")
+        revoke_devices(row["student_id"])
+        audit("enrollment.revoked", student_id=row["student_id"],
+              details={"reason": "portal account deactivated", "by": "nightly purge"})
+
+    erased = execute(
+        "UPDATE att_face_templates SET embeddings='[]', embedding_count=0 "
+        "WHERE status='revoked' AND embeddings<>'[]'"
+    )
+    return {"leavers_revoked": len(leavers), "templates_erased": int(erased or 0)}
+
+
 def thresholds() -> dict:
     return {
         "match_threshold": get_float_setting("face_match_threshold", 0.42),
         "review_threshold": get_float_setting("face_review_threshold", 0.32),
         "liveness_threshold": get_float_setting("liveness_threshold", 0.60),
         "crossmatch_margin": get_float_setting("crossmatch_margin", 0.05),
+        # Not in the office UI; tune in att_settings if real bursts trip it.
+        "consistency_threshold": get_float_setting("burst_consistency_threshold", 0.35),
     }
 
 

@@ -146,20 +146,22 @@
     if (old) old.remove();
     const el = document.createElement('div');
     el.id = 'att-cam-help';
-    el.className = 'bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-sm text-red-800';
+    el.className = 'alert alert-error';
     // info.title/detail are escaped (detail can carry a browser message);
     // the step strings are our own static markup and intentionally keep <b>.
     el.innerHTML =
-      '<b><i class="fas fa-video-slash mr-2"></i>' + esc(info.title) + '</b>'
+      '<i class="fas fa-video-slash mt-0.5"></i><div class="min-w-0 flex-1">'
+      + '<p class="font-semibold">' + esc(info.title) + '</p>'
       + '<p class="mt-1">' + esc(info.detail) + '</p>'
       + (info.steps.length
-          ? '<ol class="mt-2 ml-5" style="list-style:decimal">'
-            + info.steps.map((s) => '<li class="mt-1">' + s + '</li>').join('') + '</ol>'
+          ? '<ol class="mt-2 ml-5 list-decimal space-y-1">'
+            + info.steps.map((s) => '<li>' + s + '</li>').join('') + '</ol>'
           : '')
       + (onRetry
-          ? '<button type="button" id="att-cam-retry" class="mt-3 px-4 py-2 rounded-lg text-white '
-            + 'bg-red-600 hover:bg-red-700"><i class="fas fa-redo mr-2"></i>Try camera again</button>'
-          : '');
+          ? '<button type="button" id="att-cam-retry" class="btn btn-danger btn-sm mt-3">'
+            + '<i class="fas fa-redo"></i>Try camera again</button>'
+          : '')
+      + '</div>';
     root.insertBefore(el, root.firstChild);
     try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (x) { /* older browsers */ }
     const retryBtn = document.getElementById('att-cam-retry');
@@ -212,9 +214,9 @@
       s.getTracks().forEach((t) => t.stop());
       const panel = document.getElementById('att-cam-enable');
       if (panel) {
-        panel.className = 'bg-green-50 border border-green-200 rounded-lg p-4 mb-6 text-sm text-green-800';
-        panel.innerHTML = '<b><i class="fas fa-check-circle mr-2"></i>Camera enabled.</b> '
-          + 'You can mark attendance or enroll now.';
+        panel.className = 'alert alert-success';
+        panel.innerHTML = '<i class="fas fa-check-circle mt-0.5"></i><div><b class="font-semibold">Camera enabled.</b> '
+          + 'You can mark attendance or enroll now.</div>';
         setTimeout(() => { if (panel.parentNode) panel.remove(); }, 4000);
       }
       if (onDone) onDone(true);
@@ -236,22 +238,24 @@
     const el = document.createElement('div');
     el.id = 'att-cam-enable';
     el.className = blocked
-      ? 'bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-sm text-red-800'
-      : 'bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 text-sm text-blue-900';
+      ? 'alert alert-error'
+      : 'alert alert-info';
     el.innerHTML = blocked
-      ? '<b><i class="fas fa-video-slash mr-2"></i>Camera is blocked for this site.</b>'
+      ? '<i class="fas fa-video-slash mt-0.5"></i><div class="min-w-0 flex-1">'
+        + '<p class="font-semibold">Camera is blocked for this site.</p>'
         + '<p class="mt-1">You cannot enrol or mark attendance without it. Tap below — your browser '
         + 'will then show a camera icon in the address bar you can use to allow it.</p>'
-        + '<button type="button" id="att-cam-enable-btn" class="mt-3 px-4 py-2 rounded-lg text-white '
-        + 'bg-red-600 hover:bg-red-700"><i class="fas fa-video mr-2"></i>Request camera access</button>'
-        + '<ol class="mt-3 ml-5" style="list-style:decimal">'
-        + unblockSteps().map((s) => '<li class="mt-1">' + s + '</li>').join('') + '</ol>'
-        + '<p class="mt-2 text-xs">This page notices the moment you allow it — no need to reload.</p>'
-      : '<b><i class="fas fa-camera mr-2"></i>Camera access needed.</b>'
+        + '<button type="button" id="att-cam-enable-btn" class="btn btn-danger btn-sm mt-3">'
+        + '<i class="fas fa-video"></i>Request camera access</button>'
+        + '<ol class="mt-3 ml-5 list-decimal space-y-1">'
+        + unblockSteps().map((s) => '<li>' + s + '</li>').join('') + '</ol>'
+        + '<p class="mt-2 text-xs opacity-80">This page notices the moment you allow it — no need to reload.</p></div>'
+      : '<i class="fas fa-camera mt-0.5"></i><div class="min-w-0 flex-1">'
+        + '<p class="font-semibold">Camera access needed.</p>'
         + '<p class="mt-1">Attendance uses a live photo. Tap below and choose <b>Allow</b> when your '
         + 'browser asks — doing it now means the camera is ready when you mark attendance.</p>'
-        + '<button type="button" id="att-cam-enable-btn" class="mt-3 px-4 py-2 rounded-lg text-white '
-        + 'bg-blue-600 hover:bg-blue-700"><i class="fas fa-video mr-2"></i>Allow camera</button>';
+        + '<button type="button" id="att-cam-enable-btn" class="btn btn-primary btn-sm mt-3">'
+        + '<i class="fas fa-video"></i>Allow camera</button></div>';
     root.insertBefore(el, root.firstChild);
     document.getElementById('att-cam-enable-btn').addEventListener('click', () => requestCameraNow(null));
     watchCameraPermission();
@@ -281,9 +285,9 @@
           if (el) el.remove();
         });
         const ok = document.createElement('div');
-        ok.className = 'bg-green-50 border border-green-200 rounded-lg p-4 mb-6 text-sm text-green-800';
-        ok.innerHTML = '<b><i class="fas fa-check-circle mr-2"></i>Camera allowed.</b> '
-          + 'You can enrol or mark attendance now.';
+        ok.className = 'alert alert-success';
+        ok.innerHTML = '<i class="fas fa-check-circle mt-0.5"></i><div><b class="font-semibold">Camera allowed.</b> '
+          + 'You can enrol or mark attendance now.</div>';
         root.insertBefore(ok, root.firstChild);
         setTimeout(() => { if (ok.parentNode) ok.remove(); }, 6000);
       }
@@ -327,10 +331,10 @@
     if (document.getElementById('att-insecure-warning')) return true;
     const el = document.createElement('div');
     el.id = 'att-insecure-warning';
-    el.className = 'bg-red-50 border border-red-200 rounded-lg p-4 mb-6 text-sm text-red-800';
-    el.innerHTML = '<b><i class="fas fa-exclamation-triangle mr-2"></i>Camera unavailable.</b> ' +
+    el.className = 'alert alert-error';
+    el.innerHTML = '<i class="fas fa-exclamation-triangle mt-0.5"></i><div><b class="font-semibold">Camera unavailable.</b> ' +
       esc(reason) + ' Attendance and enrollment need the camera, so please use ' +
-      '<a class="underline font-semibold" href="' + esc(secureUrl()) + '">the secure link</a>.';
+      '<a class="underline font-semibold" href="' + esc(secureUrl()) + '">the secure link</a>.</div>';
     root.insertBefore(el, root.firstChild);
     return true;
   }
@@ -340,8 +344,8 @@
   let net = null;
 
   function pill(color, icon, text) {
-    return `<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-${color}-100 text-${color}-800">
-              <i class="fas fa-${icon} mr-2"></i>${text}</span>`;
+    return `<span class="inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium ring-1 ring-inset bg-${color}-50 text-${color}-700 ring-${color}-200">
+              <i class="fas fa-${icon} text-xs opacity-80"></i>${text}</span>`;
   }
 
   function renderStatus() {
@@ -369,7 +373,13 @@
     if (!net.face_enrolled) rows.push(pill('amber', 'id-badge', 'Enrollment pending'));
     else if (!net.device_enrolled) rows.push(pill('red', 'mobile-alt', 'This phone is not your enrolled device'));
 
-    statusCard.innerHTML = `<div class="flex flex-wrap gap-2">${rows.join('')}</div>`;
+    statusCard.innerHTML = `<div class="flex items-start gap-4">
+        <span class="icon-chip chip-brand hidden sm:inline-flex"><i class="fas fa-calendar-day"></i></span>
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-semibold text-gray-900">Today's attendance</p>
+          <div class="mt-3 flex flex-wrap gap-2">${rows.join('')}</div>
+        </div>
+      </div>`;
 
     const canMark = net.enabled && net.working_day && net.window.open_now && net.ip_allowed &&
       net.face_enrolled && net.device_enrolled &&
@@ -394,7 +404,7 @@
   async function loadStatus() {
     const { status, data } = await api('/netcheck');
     if (status === 200 && data.ok) { net = data; renderStatus(); }
-    else statusCard.innerHTML = '<div class="text-sm text-red-600">Could not reach the attendance service. Pull down to retry.</div>';
+    else statusCard.innerHTML = '<div class="flex items-start gap-3 text-sm text-rose-700"><i class="fas fa-exclamation-circle mt-0.5"></i><span>Could not reach the attendance service. Pull down to retry.</span></div>';
   }
 
   // ---------------------------------------------------------------- history
@@ -402,16 +412,18 @@
   async function loadHistory() {
     const { data } = await api('/my/history?months=3');
     const box = $('att-history');
-    if (!data.ok) { box.innerHTML = '<div class="px-6 py-4 text-sm text-gray-500">No data.</div>'; return; }
+    if (!data.ok) { box.innerHTML = '<div class="px-5 py-8 text-center text-sm text-gray-500 sm:px-6">No data.</div>'; return; }
     if (!data.records.length) {
-      box.innerHTML = '<div class="px-6 py-4 text-sm text-gray-500">No attendance records yet.</div>'; return;
+      box.innerHTML = '<div class="px-5 py-10 text-center sm:px-6"><div class="empty-state-icon"><i class="far fa-calendar"></i></div>'
+        + '<p class="empty-state-title">No attendance records yet.</p></div>'; return;
     }
     const icon = { self: ['check', 'green'], manual: ['user-edit', 'blue'], excused: ['umbrella-beach', 'amber'] };
     box.innerHTML = data.records.map((r) => {
       const [ic, color] = icon[r.kind] || ['question', 'gray'];
-      return `<div class="px-6 py-3 flex items-center justify-between text-sm">
-        <span class="font-medium text-gray-800">${esc(r.date)}</span>
-        <span class="text-${color}-700"><i class="fas fa-${ic} mr-2"></i>${esc(r.kind)}${r.marked_at_ist ? ' · ' + r.marked_at_ist : ''}</span>
+      return `<div class="flex items-center gap-3 px-5 py-3 text-sm transition-colors hover:bg-gray-50/70 sm:px-6">
+        <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs ring-1 ring-inset bg-${color}-50 text-${color}-600 ring-${color}-100"><i class="fas fa-${ic}"></i></span>
+        <span class="min-w-0 flex-1 font-medium tabular-nums text-gray-900">${esc(r.date)}</span>
+        <span class="capitalize tabular-nums text-${color}-700">${esc(r.kind)}${r.marked_at_ist ? ' · ' + r.marked_at_ist : ''}</span>
       </div>`;
     }).join('');
     $('att-history-summary').textContent = `${data.records.length} day(s) recorded`;
@@ -471,6 +483,14 @@
   function closeCamera() {
     if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
     overlay.classList.add('hidden');
+    setProgress(0, 0);
+  }
+
+  /** "Step n of N" in the overlay's eyebrow while marking; its default label otherwise. */
+  const progressEl = $('att-capture-progress');
+  const progressDefault = progressEl ? progressEl.textContent : '';
+  function setProgress(n, total) {
+    if (progressEl) progressEl.textContent = total ? `Step ${n} of ${total}` : progressDefault;
   }
 
 
@@ -495,17 +515,20 @@
   }
 
   /** Run a guided capture: for each prompt, give the student a beat to move,
-   *  then take two frames a moment apart (better odds one is clean).
-   *  `pace` is the per-step countdown: marking uses 1s (daily action, must be
-   *  quick), enrollment 2s (one-off, thoroughness beats speed). */
-  async function guidedCapture(prompts, pace) {
+   *  then take `perStep` frames a moment apart (better odds one is clean).
+   *  `pace` is the per-step countdown in seconds. Marking uses 2s: the server
+   *  judges each step on that step's own frames, so the student must already be
+   *  in the new pose when the first one is taken. Enrollment also uses 2s. */
+  async function guidedCapture(prompts, pace, perStep = 2, onStep = null) {
     const frames = [];
-    for (const prompt of prompts) {
+    for (const [i, prompt] of prompts.entries()) {
+      if (onStep) onStep(i + 1, prompts.length);
       stepLabel.textContent = prompt;
       await countdown(pace);
-      frames.push(await grabFrame());
-      await wait(350);
-      frames.push(await grabFrame());
+      for (let k = 0; k < perStep; k++) {
+        if (k) await wait(350);
+        frames.push(await grabFrame());
+      }
       if (cancelled) throw new Error('cancelled');
     }
     return frames;
@@ -526,26 +549,41 @@
     cancelled = false;
     captureMsg.textContent = '';
     try {
+      // Camera and face tracker first, challenge second: the challenge lives
+      // for two minutes from issue, and the tracker's first load (download +
+      // shader warm-up) can take a good part of that on a slow phone.
+      stepLabel.textContent = 'Starting camera…';
+      overlay.classList.remove('hidden');
+      await openCamera();
+      const guideReady = await FaceGuide.ensureLoaded(BASE);
+      if (cancelled) throw new Error('cancelled');
+
       const { status, data } = await api('/mark/challenge', { method: 'POST' });
-      if (status !== 200) { alert(data.message || 'Cannot mark right now.'); return; }
+      if (status !== 200) {
+        closeCamera();
+        alert(data.message || 'Cannot mark right now.');
+        return;
+      }
+      const issuedAt = Date.now();
 
       const strictNeeded = data.strict_mode;
-      overlay.classList.remove('hidden');
       $('att-strict-box').classList.toggle('hidden', !strictNeeded);
-      await openCamera();
 
       // Interactive capture when the face tracker is available: frames are taken
       // the moment the pose is actually hit, which is both quicker and far more
       // reliable than grabbing blindly after a countdown. Falls back to the
       // timed capture whenever the tracker cannot run — the backend judges the
       // burst either way, so nothing about marking depends on the tracker.
+      // The server's random sequence (e.g. turn → centre → other side) and how
+      // many frames it expects per step; each step is checked in its own frames.
+      const perStep = data.frames_per_step || 2;
       let frames = null;
-      const guideReady = await FaceGuide.ensureLoaded(BASE);
       if (guideReady) {
         try {
           frames = await FaceGuide.runMark({
-            video, grab: grabFrame, challenge: data.challenge, prompts: data.prompts,
+            video, grab: grabFrame, challenge: data.challenge, prompts: data.prompts, perStep,
             stepEl: stepLabel, msgEl: captureMsg, isCancelled: () => cancelled,
+            onStep: setProgress,
           });
         } catch (e) {
           if (String(e.message) === 'cancelled') throw e;
@@ -560,8 +598,9 @@
           : 'Live guide unavailable on this device — using timed capture.';
         if (!guideReady) console.warn('[attendance] face guide:', FaceGuide.lastError());
         const prompts = data.challenge.map((p) => data.prompts[p] || p);
-        frames = await guidedCapture(prompts, 1);
+        frames = await guidedCapture(prompts, 2, perStep, setProgress);
       }
+      setProgress(0, 0);
 
       let strictCode = '';
       if (strictNeeded) {
@@ -588,7 +627,18 @@
       // repeated "frames" fields for the API.
       frames.forEach((blob, i) => form.append('frames[]', blob, `f${i}.jpg`));
 
-      const result = await api('/mark', { method: 'POST', body: form });
+      let result = await api('/mark', { method: 'POST', body: form });
+      // SERVER_BUSY means nothing was judged and the challenge is still unused,
+      // so the very same frames can be sent again — but only while the
+      // challenge has comfortably longer to live than the server's queue wait.
+      const resendBefore = issuedAt + ((data.expires_in || 120) - 35) * 1000;
+      for (let tries = 0; tries < 3 && !cancelled && result.status === 503
+           && result.data.code === 'SERVER_BUSY' && Date.now() + 4000 < resendBefore; tries++) {
+        stepLabel.textContent = 'Server busy — trying again…';
+        await wait(4000);
+        result = await api('/mark', { method: 'POST', body: form });
+      }
+      if (cancelled) throw new Error('cancelled');
       closeCamera();
 
       if (result.status === 200 && result.data.ok) {

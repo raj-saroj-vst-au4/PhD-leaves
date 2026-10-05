@@ -249,6 +249,100 @@ class Holiday {
     }
 
     /**
+     * Is $date a working day?
+     *
+     * A holidays row settles its date either way: is_working_day = 0 is a
+     * holiday, is_working_day = 1 is a day declared WORKING even if it falls on a
+     * Saturday or Sunday (a compensatory working day). Only a date with no row
+     * falls back to the calendar, Monday-Friday working and the weekend off.
+     *
+     * Every "is this a working day" decision should come through here or
+     * isWorkingDateWith(). The copies that checked `weekday && not in
+     * holidays` never looked at is_working_day at all: a weekend declared
+     * working was still treated as a day off (so a Friday + Monday split around
+     * it was flagged as adjacent), and a holiday marked "work continues" was
+     * treated as a holiday.
+     *
+     * @param string $date Y-m-d
+     * @return bool
+     */
+    public function isWorkingDay($date) {
+        if (!$this->isValidDate($date)) {
+            throw new Exception("Invalid date format. Use YYYY-MM-DD");
+        }
+        return self::isWorkingDateWith($date, $this->getDayOverrides($date, $date));
+    }
+
+    /** The complement of isWorkingDay(): a weekend or a holiday, not overridden. */
+    public function isNonWorkingDay($date) {
+        return !$this->isWorkingDay($date);
+    }
+
+    /**
+     * Every holidays row between two dates (inclusive) as [Y-m-d => bool], true
+     * where the date is declared a working day and false where it is a holiday.
+     * Fetch once and pass to isWorkingDateWith() when checking a run of days.
+     */
+    public function getDayOverrides($startDate, $endDate) {
+        // MAX(): holidays has no unique key on the date, so should two rows ever
+        // disagree, the explicit "this is a working day" declaration wins.
+        $sql = "SELECT holiday_date, MAX(is_working_day) AS is_working_day
+                FROM holidays
+                WHERE holiday_date BETWEEN :start_date AND :end_date
+                GROUP BY holiday_date";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([
+            ':start_date' => $startDate,
+            ':end_date' => $endDate
+        ]);
+
+        $overrides = [];
+        while ($row = $stmt->fetch()) {
+            $overrides[$row['holiday_date']] = (bool) $row['is_working_day'];
+        }
+        return $overrides;
+    }
+
+    /**
+     * Working-day rule for one date given the overrides from getDayOverrides().
+     * Pure (no query), so a loop over a range costs one query in total.
+     *
+     * @param string $date Y-m-d
+     * @param array $overrides [Y-m-d => bool] from getDayOverrides()
+     */
+    public static function isWorkingDateWith($date, array $overrides) {
+        if (array_key_exists($date, $overrides)) {
+            return $overrides[$date];
+        }
+        return (int) (new DateTime($date))->format('N') <= 5;
+    }
+
+    /**
+     * The working days between two dates (inclusive), ascending, as Y-m-d.
+     * e.g. the 2nd-last working day of a month is
+     *   $days = getWorkingDaysInRange($first, $last); $days[count($days) - 2]
+     */
+    public function getWorkingDaysInRange($startDate, $endDate) {
+        if (!$this->isValidDate($startDate) || !$this->isValidDate($endDate)) {
+            throw new Exception("Invalid date format. Use YYYY-MM-DD");
+        }
+
+        $overrides = $this->getDayOverrides($startDate, $endDate);
+        $days = [];
+        $current = new DateTime($startDate);
+        $end = new DateTime($endDate);
+        while ($current <= $end) {
+            $dateStr = $current->format('Y-m-d');
+            if (self::isWorkingDateWith($dateStr, $overrides)) {
+                $days[] = $dateStr;
+            }
+            $current->modify('+1 day');
+        }
+        return $days;
+    }
+
+    /**
      * Get holiday by ID
      */
     public function getById($id) {
@@ -400,6 +494,17 @@ class Holiday {
      * Log action to system logs
      */
     private function logAction($userId, $action, $referenceId, $description) {
+        $description .= $referenceId ? " (Ref ID: $referenceId)" : "";
+
+        // logSystemAction records the real client IP (REMOTE_ADDR is the front
+        // proxy for everyone on production) and the impersonation note. Used
+        // only when it writes through this same connection, so the entry stays
+        // in any transaction this class is part of.
+        if (function_exists('logSystemAction') && $this->db === getDBConnection()) {
+            logSystemAction($userId, $action, 'holidays', $description);
+            return;
+        }
+
         $sql = "INSERT INTO system_logs (user_id, action, module, description, ip_address)
                 VALUES (:user_id, :action, :module, :description, :ip_address)";
 
@@ -408,8 +513,8 @@ class Holiday {
             ':user_id' => $userId,
             ':action' => $action,
             ':module' => 'holidays',
-            ':description' => $description . ($referenceId ? " (Ref ID: $referenceId)" : ""),
-            ':ip_address' => $_SERVER['REMOTE_ADDR'] ?? null
+            ':description' => $description,
+            ':ip_address' => (function_exists('getClientIp') ? getClientIp() : null) ?? ($_SERVER['REMOTE_ADDR'] ?? null)
         ]);
     }
 }

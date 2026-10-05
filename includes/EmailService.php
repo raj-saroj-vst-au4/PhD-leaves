@@ -17,6 +17,10 @@ class EmailService {
     private $db;
     private $mailer;
     private $maxRetries = 3;
+    // Why the mailer could not be set up, or null if it was. A mailer that failed
+    // to initialise must make every send report failure, not carry on as if the
+    // configuration were fine.
+    private $initError = null;
 
     public function __construct($db = null) {
         $this->db = $db ?? getDBConnection();
@@ -52,9 +56,24 @@ class EmailService {
             $this->mailer->isHTML(true);
             $this->mailer->CharSet = 'UTF-8';
 
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            $this->initError = $e->getMessage();
             logError("PHPMailer initialization failed: " . $e->getMessage());
         }
+    }
+
+    /**
+     * Text for an HTML email body, escaped exactly once.
+     *
+     * Names, reasons and remarks are stored already HTML-escaped (sanitize() on
+     * input) but not consistently, so escaping again showed students "&#039;" and
+     * "&amp;" in their mail, while passing them raw let markup through. Decoding
+     * first and then escaping gives the same safe result for either kind of row.
+     */
+    private function text($value, $multiline = false) {
+        $plain = html_entity_decode((string) $value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $html = htmlspecialchars($plain, ENT_QUOTES, 'UTF-8');
+        return $multiline ? nl2br($html) : $html;
     }
 
     /**
@@ -62,7 +81,11 @@ class EmailService {
      * @param string $email Recipient email
      * @param string $name Recipient name
      * @param string $token Invitation token
-     * @return bool Success status
+     * @return bool true only when the SMTP server accepted the message; false on
+     *              any failure (mailer not configured, SMTP refused, all retries
+     *              exhausted). It does not throw for delivery failures, so the
+     *              caller must check the return value before telling anyone the
+     *              invitation was sent. Every outcome is recorded in email_logs.
      */
     public function sendInvitation($email, $name, $token) {
         $subject = "Invitation to Join PhD Time-Off Portal";
@@ -138,14 +161,14 @@ class EmailService {
         $leaveTypeLabel = ucfirst($leave['leave_type']) . ' Leave';
 
         $placeholders = [
-            '{RECIPIENT_NAME}' => $recipientName,
-            '{STUDENT_NAME}' => $leave['student_name'],
-            '{ROLL_NUMBER}' => $leave['roll_number'],
+            '{RECIPIENT_NAME}' => $this->text($recipientName),
+            '{STUDENT_NAME}' => $this->text($leave['student_name']),
+            '{ROLL_NUMBER}' => $this->text($leave['roll_number']),
             '{LEAVE_TYPE}' => $leaveTypeLabel,
             '{START_DATE}' => date('d M Y', strtotime($leave['start_date'])),
             '{END_DATE}' => date('d M Y', strtotime($leave['end_date'])),
             '{TOTAL_DAYS}' => $leave['total_days'],
-            '{REASON}' => nl2br(htmlspecialchars($leave['reason'])),
+            '{REASON}' => $this->text($leave['reason'], true),
             '{ACTION_URL}' => $actionUrl,
             '{SITE_NAME}' => SITE_NAME
         ];
@@ -182,7 +205,7 @@ class EmailService {
         $subject = "Leave Application Approved - " . ucfirst($leave['leave_type']) . " Leave";
 
         $placeholders = [
-            '{STUDENT_NAME}' => $leave['student_name'],
+            '{STUDENT_NAME}' => $this->text($leave['student_name']),
             '{LEAVE_TYPE}' => ucfirst($leave['leave_type']) . ' Leave',
             '{START_DATE}' => date('d M Y', strtotime($leave['start_date'])),
             '{END_DATE}' => date('d M Y', strtotime($leave['end_date'])),
@@ -198,9 +221,13 @@ class EmailService {
 
     /**
      * Send rejection notification to student
-     * @param array $leave Leave application data
+     * @param array $leave Leave application data — read AFTER the decision, so the
+     *                     stage's stored remarks are present
      * @param string $rejectBy Who rejected (guide, ta_coordinator, hod, admin)
-     * @param string|null $customRemarks Optional custom remarks to use instead of fetching from leave data
+     * @param string|null $customRemarks The remarks the approver just entered; used in
+     *                     preference to the stored ones. Callers pass them: the
+     *                     leave row they held was often read before the decision,
+     *                     so every student was told "No remarks provided".
      * @param bool $isCancellation Whether this is a cancellation (affects email subject/wording)
      * @return bool Success status
      */
@@ -216,7 +243,7 @@ class EmailService {
 
         // Get rejection/cancellation remarks
         $remarks = '';
-        if ($customRemarks !== null) {
+        if ($customRemarks !== null && trim((string) $customRemarks) !== '') {
             $remarks = $customRemarks;
         } elseif ($rejectBy === 'guide' && !empty($leave['guide_remarks'])) {
             $remarks = $leave['guide_remarks'];
@@ -229,13 +256,13 @@ class EmailService {
         }
 
         $placeholders = [
-            '{STUDENT_NAME}' => $leave['student_name'],
+            '{STUDENT_NAME}' => $this->text($leave['student_name']),
             '{LEAVE_TYPE}' => ucfirst($leave['leave_type']) . ' Leave',
             '{START_DATE}' => date('d M Y', strtotime($leave['start_date'])),
             '{END_DATE}' => date('d M Y', strtotime($leave['end_date'])),
             '{TOTAL_DAYS}' => $leave['total_days'],
             '{REJECTED_BY}' => $rejectorLabel,
-            '{REMARKS}' => $remarks ? nl2br(htmlspecialchars($remarks)) : 'No remarks provided',
+            '{REMARKS}' => trim((string) $remarks) !== '' ? $this->text($remarks, true) : 'No remarks provided',
             '{DASHBOARD_URL}' => $this->getAbsoluteUrl("/student/dashboard.php"),
             '{SITE_NAME}' => SITE_NAME
         ];
@@ -330,13 +357,13 @@ class EmailService {
         $subject = "Action Required: Extended Leave Application - {$leave['student_name']}";
 
         $placeholders = [
-            '{STUDENT_NAME}' => $leave['student_name'],
-            '{ROLL_NUMBER}' => $leave['roll_number'],
+            '{STUDENT_NAME}' => $this->text($leave['student_name']),
+            '{ROLL_NUMBER}' => $this->text($leave['roll_number']),
             '{LEAVE_TYPE}' => ucfirst($leave['leave_type']) . ' Leave',
             '{START_DATE}' => date('d M Y', strtotime($leave['start_date'])),
             '{END_DATE}' => date('d M Y', strtotime($leave['end_date'])),
             '{TOTAL_DAYS}' => $leave['total_days'],
-            '{REASON}' => nl2br(htmlspecialchars($leave['reason'])),
+            '{REASON}' => $this->text($leave['reason'], true),
             '{ACTION_URL}' => $this->getAbsoluteUrl("/admin/pending_approvals.php"),
             '{EXTENDED_THRESHOLD}' => EXTENDED_LEAVE_THRESHOLD,
             '{SITE_NAME}' => SITE_NAME
@@ -692,11 +719,16 @@ class EmailService {
      * @param bool $academicEligible Whether student is eligible for academic leave
      * @return bool Success status
      */
-    public function sendBalanceReset($student, $academicEligible) {
-        $month = date('F Y');
+    public function sendBalanceReset($student, $academicEligible, $resetDate = null) {
+        // Name the cycle by the reset date, not today: a catch-up run for
+        // 1 July sent in September must still say "July 2026".
+        $month = date('F Y', strtotime($resetDate ?? 'today'));
         $subject = "Leave Balance Reset - $month";
 
-        $message = "Dear " . $student['name'] . ",\n\n";
+        // Names are stored HTML-escaped; decode once so htmlspecialchars below
+        // does not print "&amp;#039;".
+        $name = html_entity_decode((string) $student['name'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $message = "Dear " . $name . ",\n\n";
         $message .= "Your leave balances have been reset for the new cycle ($month).\n\n";
         $message .= "New Balances:\n";
         $message .= "- Personal Leave: +" . PERSONAL_LEAVE_ALLOCATION . " days (carries forward)\n";
@@ -716,7 +748,7 @@ class EmailService {
               . nl2br(htmlspecialchars($message))
               . '</div>';
 
-        return $this->sendEmail($student['email'], $subject, $body, 'leave_reset', null, $student['name']);
+        return $this->sendEmail($student['email'], $subject, $body, 'leave_reset', null, $name);
     }
 
     /**
@@ -727,11 +759,20 @@ class EmailService {
      * @param string $emailType Type of email for logging
      * @param int|null $referenceId Reference ID (e.g., leave_id)
      * @param string|null $recipientName Recipient name
-     * @return bool Success status
+     * @return bool true only if the SMTP server accepted the message. Never throws:
+     *              every failure is logged (error log + email_logs) and returned
+     *              as false.
      */
     private function sendEmail($email, $subject, $body, $emailType, $referenceId = null, $recipientName = null) {
         $attempts = 0;
         $lastError = null;
+
+        // Retrying cannot fix a mailer that was never configured.
+        if ($this->initError !== null) {
+            $this->logEmail($email, $subject, $emailType, $referenceId, 'failed',
+                'Mailer not initialised: ' . $this->initError);
+            return false;
+        }
 
         while ($attempts < $this->maxRetries) {
             try {
@@ -762,7 +803,9 @@ class EmailService {
                     return true;
                 }
 
-            } catch (Exception $e) {
+            } catch (Throwable $e) {
+                // Throwable, not just PHPMailer's Exception: anything else escaping
+                // here would reach callers that only look at the return value.
                 $lastError = $e->getMessage();
                 logError("Email send attempt $attempts failed: " . $lastError, [
                     'email' => $email,

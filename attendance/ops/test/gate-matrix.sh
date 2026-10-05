@@ -68,7 +68,15 @@ cat <<'EOF'
   - printed photo:       hold a photo up                      -> 422 (LIVENESS/POSE fail) + evidence stored
   - phone-screen photo:  photo of the student on 2nd phone    -> 422 + evidence stored
   - wrong face:          friend marks on your account         -> 422 CROSSMATCH + office sees who
+  - mixed burst:         friend does the head turn mid-burst  -> 422 CROSSMATCH / MIXED_FACES
+  - wrong side:          turn the SAME side at "other side"   -> 422 POSE_CHALLENGE_FAILED
+  - parallel flood:      8 x /mark at once, budget 5          -> never more than 5 judged; rest 429
+  - re-roll flood:       /mark/challenge 5 x in a minute      -> 5th 429 TOO_MANY_CHALLENGES
+  - replayed burst:      resend an earlier burst's files      -> 422 REPLAYED_FRAME
+  - mirrored photo:      turned photo + its horizontal flip   -> 422 MIRRORED_FRAMES
+  - scan-bomb JPEG:      progressive frame with >16 scans     -> 400 BAD_FRAME
   - strict mode:         enable, type stale/wrong code        -> 403 STRICT_CODE_INVALID
+  - hard delete:         admin deletes a student with records -> refused (FK 1451), nothing removed
   - append-only:         UPDATE/DELETE att_records as attendance_app -> SQL error 1142/45000
 EOF
 

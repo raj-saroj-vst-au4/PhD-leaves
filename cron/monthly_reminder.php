@@ -3,8 +3,9 @@
  * Cron Job: Monthly Attendance Reminder
  * Sends reminder to all active students on 2nd last working day of month
  *
- * Crontab entry:
- * 0 9 25-31 * * /usr/bin/php /srv/www/phdtimeoff/cron/monthly_reminder.php
+ * Crontab entry (the script itself decides whether today is the day, so the
+ * window only has to contain the 2nd-last working day of every month):
+ * 0 9 20-31 * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_reminder.php
  */
 
 /*
@@ -30,15 +31,17 @@ require_once __DIR__ . '/../classes/User.php';
 require_once __DIR__ . '/../classes/Holiday.php';
 require_once __DIR__ . '/../includes/EmailService.php';
 
-$logDir = __DIR__ . '/../logs';
+// Private log directory: logs/ inside the webroot is served as static files by
+// production nginx, and these logs carry student names and addresses.
+$logDir = rtrim(LOG_DIR, '/');
 if (!is_dir($logDir)) {
-    mkdir($logDir, 0775, true);
+    @mkdir($logDir, 0770, true);
 }
 if (!is_writable($logDir)) {
-    @chmod($logDir, 0775);
+    @chmod($logDir, 0770);
     if (!is_writable($logDir)) {
         $logDir = sys_get_temp_dir();
-        echo "[WARNING] logs/ directory not writable, logging to $logDir\n";
+        echo "[WARNING] " . LOG_DIR . " not writable, logging to $logDir\n";
     }
 }
 $logFile = $logDir . '/cron_reminder_' . date('Y-m-d') . '.log';
@@ -63,36 +66,12 @@ try {
     $currentMonth = $today->format('m');
     $currentYear = $today->format('Y');
 
-    // Get last day and first day of month (first day as safety bound)
-    $lastDayOfMonth = new DateTime("last day of $currentYear-$currentMonth");
-    $firstDayOfMonth = new DateTime("$currentYear-$currentMonth-01");
-
-    // Get holidays for the month
-    $holidays = $holidayClass->getByYear($currentYear);
-    $holidayDates = array_map(function($h) {
-        return $h['holiday_date'];
-    }, $holidays);
-
-    // Count back to find 2nd last working day
-    $workingDaysFound = 0;
-    $checkDate = clone $lastDayOfMonth;
-    $secondLastWorkingDay = null;
-
-    while ($checkDate >= $firstDayOfMonth && $workingDaysFound < 2) {
-        $dayOfWeek = (int)$checkDate->format('N'); // 1 (Mon) to 7 (Sun)
-        $dateStr = $checkDate->format('Y-m-d');
-
-        // Check if it's a working day (not weekend and not holiday)
-        if ($dayOfWeek < 6 && !in_array($dateStr, $holidayDates)) {
-            $workingDaysFound++;
-            if ($workingDaysFound === 2) {
-                $secondLastWorkingDay = clone $checkDate;
-                break;
-            }
-        }
-
-        $checkDate->modify('-1 day');
-    }
+    // 2nd-last working day of the month, by Holiday's calendar: Mon-Fri, minus
+    // holidays, plus any weekend day the holidays table declares working. The
+    // old loop put every holidays row in one "holiday" list and never read
+    // is_working_day, so a Saturday declared working was still a day off.
+    $workingDays = $holidayClass->getWorkingDaysInRange($today->format('Y-m-01'), $today->format('Y-m-t'));
+    $secondLastWorkingDay = count($workingDays) >= 2 ? new DateTime($workingDays[count($workingDays) - 2]) : null;
 
     if (!$secondLastWorkingDay) {
         cronLog("ERROR: Could not find 2nd last working day (fewer than 2 working days in month). Exiting.");

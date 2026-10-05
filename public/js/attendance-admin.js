@@ -74,9 +74,9 @@
   let day = null;
 
   function counter(label, value, color) {
-    return `<div class="atta-card" style="padding:1rem;text-align:center;margin-bottom:0">
-      <div class="text-2xl font-bold text-${color}-600">${value}</div>
-      <div class="atta-muted">${label}</div></div>`;
+    return `<div class="card px-4 py-3.5">
+      <div class="flex items-center gap-2"><span class="h-2 w-2 shrink-0 rounded-full bg-${color}-500"></span><span class="truncate text-xs font-medium uppercase tracking-wide text-gray-500">${label}</span></div>
+      <div class="mt-1.5 text-2xl font-semibold tabular-nums tracking-tight text-gray-900">${value}</div></div>`;
   }
 
   // Frame viewers are wired by delegation on [data-frames] rather than an inline
@@ -94,10 +94,12 @@
     const modal = document.getElementById('atta-frames-modal');
     const body = document.getElementById('atta-frames-body');
     document.getElementById('atta-frames-title').textContent = title;
-    body.innerHTML = '<div class="col-span-3 atta-empty">Loading…</div>';
+    body.innerHTML = '<div class="col-span-3 py-10 text-center text-sm text-gray-500"><i class="fas fa-circle-notch fa-spin mr-2 text-blue-500"></i>Loading…</div>';
     modal.classList.remove('hidden');
+    // Every stored frame: a marking burst is 2 per challenge step (up to 8),
+    // an enrollment capture up to 20. The endpoint 404s past the last one.
     const imgs = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 24; i++) {
       const res = await fetch(API + encodeURIComponent(`/admin/frame?dir=${dir}&index=${i}`), {
         credentials: 'same-origin',
         headers: { Authorization: 'Bearer ' + ticket },
@@ -106,13 +108,23 @@
       imgs.push(URL.createObjectURL(await res.blob()));
     }
     body.innerHTML = imgs.length
-      ? imgs.map((u) => `<img src="${u}" class="rounded border object-cover w-full">`).join('')
-      : '<div class="col-span-3 atta-empty">Frames unavailable (purged or none stored).</div>';
+      ? imgs.map((u) => `<img src="${u}" class="aspect-[3/4] w-full rounded-lg bg-gray-100 object-cover ring-1 ring-gray-200">`).join('')
+      : '<div class="col-span-3 py-10 text-center text-sm text-gray-500">Frames unavailable (purged or none stored).</div>';
   };
 
   async function loadDay() {
     const { status, data } = await api('/admin/today?day=' + dateInput.value);
-    if (status !== 200) return;
+    if (status !== 200) {
+      // Say so on the page: returning silently left the office looking at a
+      // blank dashboard whenever the backend was down.
+      document.getElementById('atta-counters').innerHTML = '';
+      document.getElementById('atta-panel-today').innerHTML =
+        '<div class="alert alert-error"><i class="fas fa-exclamation-triangle mt-0.5"></i><div>'
+        + '<b class="font-semibold">Attendance service unavailable.</b> '
+        + esc((data && data.message) || `The attendance backend did not respond (HTTP ${status}).`)
+        + ' Try again in a minute; if it persists, check the backend (see the attendance RUNBOOK).</div></div>';
+      return;
+    }
     day = data;
 
     document.getElementById('atta-counters').innerHTML =
@@ -133,26 +145,26 @@
   }
 
   function statusChip(row) {
-    if (!row.enrolled) return '<span class="atta-chip bg-gray-200 text-gray-600">not enrolled</span>';
+    if (!row.enrolled) return '<span class="badge badge-neutral">not enrolled</span>';
     const map = {
-      self: ['bg-green-100 text-green-800', 'Present ' + (row.marked_at_ist || '')],
-      manual: ['bg-blue-100 text-blue-800', 'Manual ' + (row.marked_at_ist || '')],
-      excused: ['bg-amber-100 text-amber-800', 'Excused'],
-      absent: ['bg-red-100 text-red-700', 'Absent'],
+      self: ['badge-approved', 'Present ' + (row.marked_at_ist || '')],
+      manual: ['badge-brand', 'Manual ' + (row.marked_at_ist || '')],
+      excused: ['badge-pending', 'Excused'],
+      absent: ['badge-rejected', 'Absent'],
     };
     const [cls, label] = map[row.status] || map.absent;
-    return `<span class="atta-chip ${cls}">${esc(label.trim())}</span>`;
+    return `<span class="badge ${cls}">${esc(label.trim())}</span>`;
   }
 
   function renderToday() {
     const w = day.window;
     const head = `
-      <div class="atta-card" style="display:flex;flex-wrap:wrap;align-items:center;gap:.75rem">
-        <span class="font-medium">${day.date}</span>
+      <div class="card flex flex-wrap items-center gap-x-5 gap-y-3 px-5 py-3.5 text-sm">
+        <span class="inline-flex items-center gap-2 font-semibold tabular-nums text-gray-900"><i class="far fa-calendar text-gray-400"></i>${day.date}</span>
         ${w.working_day
-          ? `<span>Window <b>${w.start}–${w.end}</b>${w.extension ? ` <span class="text-amber-700">(+${w.extension}m extended)</span>` : ''}</span>`
-          : `<span class="text-gray-500">Non-working day${w.label ? ' — ' + esc(w.label) : ''}</span>`}
-        <button id="atta-extend" class="atta-btn atta-btn-amber ml-auto">
+          ? `<span class="inline-flex flex-wrap items-center gap-2 text-gray-600"><i class="far fa-clock text-gray-400"></i>Window <b class="font-semibold tabular-nums text-gray-900">${w.start}–${w.end}</b>${w.extension ? ` <span class="badge badge-pending">+${w.extension}m extended</span>` : ''}</span>`
+          : `<span class="inline-flex items-center gap-2 text-gray-500"><i class="fas fa-mug-hot text-gray-400"></i>Non-working day${w.label ? ' — ' + esc(w.label) : ''}</span>`}
+        <button id="atta-extend" class="btn btn-sm ml-auto bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200 hover:bg-amber-100">
           <i class="fas fa-clock"></i>Extend today
         </button>
       </div>`;
@@ -165,33 +177,35 @@
     const isToday = day.date === new Date().toISOString().slice(0, 10);
     const rows = day.rows.map((r) => `
       <tr>
-        <td class="atta-mono">${esc(r.roll)}</td>
-        <td>${esc(r.name)}</td>
-        <td>${statusChip(r)}</td>
-        <td class="atta-muted">${r.match_score != null ? 'match ' + r.match_score : ''}${r.reason ? ' · ' + esc(r.reason) : ''}</td>
-        <td class="atta-num">
-          <span class="atta-actions">
-          ${r.frames_dir ? `<button class="atta-link" data-frames="${esc(r.frames_dir)}" data-frames-title="${esc(r.name)}">photos</button>` : ''}
+        <td class="whitespace-nowrap font-mono text-xs text-gray-500">${esc(r.roll)}</td>
+        <td class="whitespace-nowrap font-medium text-gray-900">${esc(r.name)}</td>
+        <td class="whitespace-nowrap">${statusChip(r)}</td>
+        <td class="min-w-[10rem] text-xs text-gray-500">${r.match_score != null ? 'match ' + r.match_score : ''}${r.reason ? ' · ' + esc(r.reason) : ''}</td>
+        <td class="whitespace-nowrap text-right">
+          <span class="inline-flex justify-end gap-1">
+          ${r.frames_dir ? `<button class="btn btn-ghost btn-sm px-2" data-frames="${esc(r.frames_dir)}" data-frames-title="${esc(r.name)}"><i class="fas fa-images"></i>Photos</button>` : ''}
           ${isToday && ['self', 'manual', 'excused'].includes(r.status)
-            ? `<button class="atta-link atta-link-red" data-act="reset" data-sid="${r.student_id}" data-name="${esc(r.name)}">reset</button>`
+            ? `<button class="btn btn-ghost btn-sm px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700" data-act="reset" data-sid="${r.student_id}" data-name="${esc(r.name)}"><i class="fas fa-undo"></i>Reset</button>`
             : ''}
-          <button class="atta-link atta-link-gray" data-act="mark" data-sid="${r.student_id}" data-name="${esc(r.name)}">override</button>
+          <button class="btn btn-ghost btn-sm px-2" data-act="mark" data-sid="${r.student_id}" data-name="${esc(r.name)}"><i class="fas fa-user-edit"></i>Override</button>
           ${r.enrolled
-            ? `<button class="atta-link atta-link-red" data-act="revoke" data-sid="${r.student_id}" data-name="${esc(r.name)}">revoke</button>`
-            : `<button class="atta-link atta-link-amber" data-act="enroll" data-sid="${r.student_id}" data-name="${esc(r.name)}">enroll code</button>`}
+            ? `<button class="btn btn-ghost btn-sm px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700" data-act="revoke" data-sid="${r.student_id}" data-name="${esc(r.name)}"><i class="fas fa-user-slash"></i>Revoke</button>`
+            : `<button class="btn btn-ghost btn-sm px-2 text-amber-700 hover:bg-amber-50 hover:text-amber-800" data-act="enroll" data-sid="${r.student_id}" data-name="${esc(r.name)}"><i class="fas fa-key"></i>Enroll code</button>`}
           </span>
         </td>
       </tr>`).join('');
 
     document.getElementById('atta-panel-today').innerHTML = head + `
-      <div class="atta-card atta-card-flush">
-        <table class="atta-table">
+      <div class="card overflow-hidden">
+        <div class="overflow-x-auto">
+        <table class="table-modern">
           <thead>
             <tr><th>Roll</th><th>Name</th><th>Status</th><th>Detail</th>
-                <th class="atta-num">Actions</th></tr>
+                <th class="text-right">Actions</th></tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
+        </div>
       </div>`;
 
     document.getElementById('atta-extend').onclick = async () => {
@@ -253,19 +267,25 @@
   function renderReviews() {
     const panel = document.getElementById('atta-panel-review');
     if (!day.pending.length) {
-      panel.innerHTML = '<div class="atta-card atta-empty">No pending face reviews. Borderline matches will appear here instead of being marked absent.</div>';
+      panel.innerHTML = '<div class="card p-5"><div class="empty-state"><div class="empty-state-icon"><i class="fas fa-user-check"></i></div>'
+        + '<p class="empty-state-title">No pending face reviews.</p>'
+        + '<p class="empty-state-description">Borderline matches will appear here instead of being marked absent.</p></div></div>';
       return;
     }
     panel.innerHTML = day.pending.map((p) => `
-      <div class="atta-card" style="display:flex;flex-wrap:wrap;align-items:center;gap:1rem">
-        <div>
-          <div class="font-medium">${esc(p.name)} <span class="atta-mono text-gray-500">${esc(p.roll)}</span></div>
-          <div class="atta-muted">at ${p.at_ist} · match ${p.match_score.toFixed(2)} · liveness ${p.liveness.toFixed(2)}</div>
+      <div class="card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:p-5">
+        <div class="flex min-w-0 flex-1 items-center gap-4">
+          <button class="flex h-20 w-16 shrink-0 flex-col items-center justify-center gap-1.5 rounded-xl bg-gray-100 text-gray-400 ring-1 ring-inset ring-gray-200 transition hover:bg-blue-50 hover:text-blue-600 hover:ring-blue-200" data-frames="${esc(p.frames_dir)}" data-frames-title="${esc(p.name)}" title="View photos" aria-label="View photos">
+            <i class="fas fa-images text-xl"></i><span class="text-[0.6875rem] font-medium">Photos</span>
+          </button>
+          <div class="min-w-0">
+            <p class="font-semibold text-gray-900">${esc(p.name)} <span class="ml-1 font-mono text-xs font-normal text-gray-500">${esc(p.roll)}</span></p>
+            <p class="mt-1 text-sm text-gray-500">at ${p.at_ist} · match ${p.match_score.toFixed(2)} · liveness ${p.liveness.toFixed(2)}</p>
+          </div>
         </div>
-        <button class="atta-link" data-frames="${esc(p.frames_dir)}" data-frames-title="${esc(p.name)}">view photos</button>
-        <div class="ml-auto flex gap-2">
-          <button class="atta-btn atta-btn-green" data-rev="approve" data-id="${p.attempt_id}">Approve</button>
-          <button class="atta-btn atta-btn-red" data-rev="reject" data-id="${p.attempt_id}">Reject</button>
+        <div class="flex gap-2 sm:shrink-0">
+          <button class="btn btn-success btn-sm flex-1 sm:flex-none" data-rev="approve" data-id="${p.attempt_id}"><i class="fas fa-check"></i>Approve</button>
+          <button class="btn btn-soft-danger btn-sm flex-1 sm:flex-none" data-rev="reject" data-id="${p.attempt_id}"><i class="fas fa-times"></i>Reject</button>
         </div>
       </div>`).join('');
 
@@ -286,27 +306,28 @@
   function renderAttempts() {
     const panel = document.getElementById('atta-panel-attempts');
     if (!day.failed.length) {
-      panel.innerHTML = '<div class="atta-card atta-empty">No failed attempts on this day.</div>';
+      panel.innerHTML = '<div class="card p-5"><div class="empty-state"><div class="empty-state-icon"><i class="fas fa-shield-alt"></i></div>'
+        + '<p class="empty-state-title">No failed attempts on this day.</p></div></div>';
       return;
     }
     panel.innerHTML = `
-      <div class="atta-card atta-card-flush">
-      <table class="atta-table">
+      <div class="card overflow-hidden"><div class="overflow-x-auto">
+      <table class="table-modern">
         <thead>
           <tr><th>Time</th><th>Roll</th><th>Code</th>
               <th>Cross-match</th><th>IP</th><th></th></tr>
         </thead><tbody>
         ${day.failed.map((f) => `
           <tr>
-            <td>${f.at_ist || ''}</td>
-            <td class="atta-mono">${esc(f.roll || '?')}</td>
-            <td><span class="atta-chip bg-red-100 text-red-700">${esc(f.code)}</span></td>
-            <td class="atta-muted">${f.crossmatch_student_id ? '<b class="text-red-700">matched another student (#' + f.crossmatch_student_id + ')</b>' : ''}</td>
-            <td class="atta-mono">${esc(f.source_ip || '')}</td>
-            <td>${f.frames_dir ? `<button class="atta-link" data-frames="${esc(f.frames_dir)}" data-frames-title="Attempt #${f.attempt_id}">photos</button>` : ''}</td>
+            <td class="whitespace-nowrap tabular-nums">${f.at_ist || ''}</td>
+            <td class="whitespace-nowrap font-mono text-xs text-gray-500">${esc(f.roll || '?')}</td>
+            <td><span class="badge badge-rejected font-mono">${esc(f.code)}</span></td>
+            <td class="text-xs text-gray-500">${f.crossmatch_student_id ? '<span class="font-semibold text-rose-700">matched another student (#' + f.crossmatch_student_id + ')</span>' : ''}</td>
+            <td class="whitespace-nowrap font-mono text-xs text-gray-500">${esc(f.source_ip || '')}</td>
+            <td class="text-right">${f.frames_dir ? `<button class="btn btn-ghost btn-sm px-2" data-frames="${esc(f.frames_dir)}" data-frames-title="Attempt #${f.attempt_id}"><i class="fas fa-images"></i>Photos</button>` : ''}</td>
           </tr>`).join('')}
-        </tbody></table></div>
-      <p class="atta-footnote">Every failed attempt is stored with its photos — a spoof attempt is its own evidence.</p>`;
+        </tbody></table></div></div>
+      <p class="flex items-center gap-2 px-1 text-xs text-gray-500"><i class="fas fa-info-circle text-gray-400"></i>Every failed attempt is stored with its photos — a spoof attempt is its own evidence.</p>`;
   }
 
   // -------------------------------------------------------------- config
@@ -318,85 +339,93 @@
     const weekdays = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
     document.getElementById('atta-panel-config').innerHTML = `
-      <div class="atta-grid atta-grid-2">
-        <div class="atta-card">
-          <h3 class="atta-card-title"><i class="fas fa-wifi mr-2 text-blue-600"></i>Office WiFi (allowed IPs)</h3>
-          <p class="atta-card-note">Marking only works from these WAN IPs. Old entries are deactivated, never deleted.</p>
+      <div class="grid gap-4 lg:grid-cols-2">
+        <div class="card p-5">
+          <h3 class="card-title flex items-center gap-2.5"><span class="icon-chip-sm chip-brand"><i class="fas fa-wifi"></i></span>Office WiFi (allowed IPs)</h3>
+          <p class="mt-2 mb-3 text-xs leading-relaxed text-gray-500">Marking only works from these WAN IPs. Old entries are deactivated, never deleted.</p>
+          <div class="divide-y divide-gray-100">
           ${data.allowed_ips.map((i) => `
-            <div class="atta-row ${i.active ? '' : 'opacity-40 line-through'}">
-              <span class="atta-mono atta-row-label">${esc(i.ip)}</span>
-              <span class="atta-muted">${esc(i.label)}</span>
-              ${i.active ? `<button class="atta-link atta-link-red" data-deact="${i.id}">deactivate</button>` : '<span class="atta-muted">inactive</span>'}
-            </div>`).join('') || '<div class="atta-empty-warn">No IPs configured — nobody can mark attendance yet.</div>'}
-          <div class="atta-form-row">
-            <input id="atta-ip" placeholder="e.g. 10.119.4.27" class="atta-input atta-input-mono" style="flex:1 1 auto">
-            <input id="atta-ip-label" placeholder="label" class="atta-input w-28">
-            <button id="atta-ip-add" class="atta-btn">Add</button>
+            <div class="flex items-center gap-2 py-2 text-sm ${i.active ? '' : 'opacity-40 line-through'}">
+              <span class="min-w-0 flex-1 truncate font-mono text-xs text-gray-900">${esc(i.ip)}</span>
+              <span class="text-xs text-gray-500">${esc(i.label)}</span>
+              ${i.active ? `<button class="btn btn-ghost btn-sm px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700" data-deact="${i.id}">Deactivate</button>` : '<span class="text-xs text-gray-500">inactive</span>'}
+            </div>`).join('') || '<div class="flex items-center gap-2 py-2 text-sm font-medium text-rose-600"><i class="fas fa-exclamation-triangle"></i>No IPs configured — nobody can mark attendance yet.</div>'}
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <input id="atta-ip" placeholder="e.g. 10.119.4.27" class="form-input min-w-[10rem] flex-1 py-2 font-mono">
+            <input id="atta-ip-label" placeholder="label" class="form-input w-28 py-2">
+            <button id="atta-ip-add" class="btn btn-primary btn-sm py-2"><i class="fas fa-plus"></i>Add</button>
           </div>
         </div>
 
-        <div class="atta-card">
-          <h3 class="atta-card-title"><i class="fas fa-clock mr-2 text-blue-600"></i>Weekly window</h3>
-          <p class="atta-card-note">Start inclusive, end exclusive. Holidays come from the portal's holiday calendar automatically.</p>
+        <div class="card p-5">
+          <h3 class="card-title flex items-center gap-2.5"><span class="icon-chip-sm chip-brand"><i class="fas fa-clock"></i></span>Weekly window</h3>
+          <p class="mt-2 mb-3 text-xs leading-relaxed text-gray-500">Start inclusive, end exclusive. Holidays come from the portal's holiday calendar automatically.</p>
+          <div class="divide-y divide-gray-100">
           ${data.windows.map((w) => `
-            <div class="atta-row">
-              <span class="w-10 font-medium">${weekdays[w.weekday]}</span>
-              <input type="checkbox" data-wd-working="${w.weekday}" ${w.working ? 'checked' : ''}>
-              <input type="time" value="${w.start}" data-wd-start="${w.weekday}" class="atta-input">
-              <span>–</span>
-              <input type="time" value="${w.end}" data-wd-end="${w.weekday}" class="atta-input">
-              <button class="atta-link ml-auto" data-wd-save="${w.weekday}">save</button>
+            <div class="flex flex-wrap items-center gap-1.5 py-2 text-sm sm:gap-2">
+              <span class="w-9 font-medium text-gray-900 sm:w-10">${weekdays[w.weekday]}</span>
+              <input type="checkbox" class="h-4 w-4 rounded border-gray-300" data-wd-working="${w.weekday}" ${w.working ? 'checked' : ''}>
+              <input type="time" value="${w.start}" data-wd-start="${w.weekday}" class="form-input w-auto px-2 py-1.5 sm:px-3">
+              <span class="text-gray-400">–</span>
+              <input type="time" value="${w.end}" data-wd-end="${w.weekday}" class="form-input w-auto px-2 py-1.5 sm:px-3">
+              <button class="btn btn-ghost btn-sm px-2 text-blue-600 hover:bg-blue-50 hover:text-blue-700 ml-auto" data-wd-save="${w.weekday}">Save</button>
             </div>`).join('')}
+          </div>
         </div>
 
-        <div class="atta-card">
-          <h3 class="atta-card-title"><i class="fas fa-sliders-h mr-2 text-blue-600"></i>Verification thresholds</h3>
-          <p class="atta-card-note">Between the review and match thresholds, marks go to the Reviews queue instead of failing — nobody is auto-marked absent by a borderline score.</p>
+        <div class="card p-5">
+          <h3 class="card-title flex items-center gap-2.5"><span class="icon-chip-sm chip-brand"><i class="fas fa-sliders-h"></i></span>Verification thresholds</h3>
+          <p class="mt-2 mb-3 text-xs leading-relaxed text-gray-500">Between the review and match thresholds, marks go to the Reviews queue instead of failing — nobody is auto-marked absent by a borderline score.</p>
+          <div class="divide-y divide-gray-100">
           ${[['face_match_threshold', 'Auto-accept match ≥'], ['face_review_threshold', 'Send to review ≥'],
              ['liveness_threshold', 'Liveness ≥'], ['crossmatch_margin', 'Cross-match margin'],
              ['max_attempts_per_day', 'Max failed attempts/day'], ['frame_retention_days', 'Photo retention (days)'],
              ['enrollment_min_frames', 'Min enrollment frames']].map(([k, label]) => `
-            <div class="atta-row">
-              <span class="atta-row-label">${label}</span>
-              <input value="${esc(s[k] || '')}" data-set="${k}" class="atta-input w-20" style="text-align:right">
-              <button class="atta-link" data-set-save="${k}">save</button>
+            <div class="flex items-center gap-2 py-2 text-sm">
+              <span class="min-w-0 flex-1 text-gray-700">${label}</span>
+              <input value="${esc(s[k] || '')}" data-set="${k}" class="form-input w-20 py-1.5 text-right tabular-nums">
+              <button class="btn btn-ghost btn-sm px-2 text-blue-600 hover:bg-blue-50 hover:text-blue-700" data-set-save="${k}">Save</button>
             </div>`).join('')}
+          </div>
         </div>
 
-        <div class="atta-card">
-          <h3 class="atta-card-title"><i class="fas fa-shield-alt mr-2 text-blue-600"></i>Modes</h3>
-          <div class="atta-row">
-            <div class="atta-row-label"><b>Attendance enabled</b><div class="atta-muted">Master switch.</div></div>
-            <input type="checkbox" data-toggle="attendance_enabled" ${s.attendance_enabled === '1' ? 'checked' : ''}>
+        <div class="card p-5">
+          <h3 class="card-title flex items-center gap-2.5"><span class="icon-chip-sm chip-brand"><i class="fas fa-shield-alt"></i></span>Modes</h3>
+          <div class="mt-2 divide-y divide-gray-100">
+          <div class="flex items-start gap-3 py-3 text-sm">
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Attendance enabled</p><p class="mt-0.5 text-xs text-gray-500">Master switch.</p></div>
+            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="attendance_enabled" ${s.attendance_enabled === '1' ? 'checked' : ''}>
           </div>
-          <div class="atta-row">
-            <div class="atta-row-label"><b>Strict mode</b><div class="atta-muted">Also require the rotating code from the office screen. Stops remote marking via a friend's tethered phone.</div></div>
-            <input type="checkbox" data-toggle="strict_mode" ${s.strict_mode === '1' ? 'checked' : ''}>
+          <div class="flex items-start gap-3 py-3 text-sm">
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Strict mode</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Also require the rotating code from the office screen. Stops remote marking via a friend's tethered phone.</p></div>
+            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="strict_mode" ${s.strict_mode === '1' ? 'checked' : ''}>
           </div>
-          <div class="atta-row" style="display:block">
-            <b>Report recipients</b>
-            <div class="atta-form-row" style="margin-top:.25rem">
-              <input id="atta-recipients" value='${esc(s.report_recipients || '[]')}' class="atta-input atta-input-mono" style="flex:1 1 auto">
-              <button id="atta-recipients-save" class="atta-btn">Save</button>
+          <div class="py-3 text-sm">
+            <p class="font-medium text-gray-900">Report recipients</p>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <input id="atta-recipients" value='${esc(s.report_recipients || '[]')}' class="form-input min-w-[12rem] flex-1 py-2 font-mono text-xs">
+              <button id="atta-recipients-save" class="btn btn-primary btn-sm py-2">Save</button>
             </div>
-            <div class="atta-muted" style="margin-top:.25rem">JSON array, e.g. ["somoffice@iitb.ac.in"]</div>
+            <p class="mt-1.5 text-xs text-gray-500">JSON array, e.g. ["somoffice@iitb.ac.in"]</p>
           </div>
-          <div class="atta-row" style="display:block">
-            <b>Date override</b>
-            <div class="atta-form-row" style="margin-top:.25rem">
-              <input type="date" id="atta-ov-date" class="atta-input">
-              <select id="atta-ov-working" class="atta-input">
+          <div class="py-3 text-sm">
+            <p class="font-medium text-gray-900">Date override</p>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <input type="date" id="atta-ov-date" class="form-input w-auto py-2">
+              <select id="atta-ov-working" class="form-select w-auto py-2">
                 <option value="">working: inherit</option><option value="1">working: yes</option><option value="0">working: no</option>
               </select>
-              <input type="time" id="atta-ov-start" class="atta-input">
-              <input type="time" id="atta-ov-end" class="atta-input">
-              <input id="atta-ov-label" placeholder="label" class="atta-input w-28">
-              <button id="atta-ov-save" class="atta-btn">Set</button>
+              <input type="time" id="atta-ov-start" class="form-input w-auto py-2">
+              <input type="time" id="atta-ov-end" class="form-input w-auto py-2">
+              <input id="atta-ov-label" placeholder="label" class="form-input w-28 py-2">
+              <button id="atta-ov-save" class="btn btn-primary btn-sm py-2">Set</button>
             </div>
             ${(data.overrides || []).map((o) => `
-              <div class="atta-muted" style="margin-top:.25rem">${o.date}: ${o.working == null ? 'inherit' : (o.working ? 'working' : 'off')}
+              <div class="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-gray-500">${o.date}: ${o.working == null ? 'inherit' : (o.working ? 'working' : 'off')}
                 ${o.start ? o.start + '–' + o.end : ''} ${esc(o.label || '')}
-                <button class="atta-link atta-link-red" data-ov-del="${o.date}">remove</button></div>`).join('')}
+                <button class="font-medium text-rose-600 hover:text-rose-700 hover:underline" data-ov-del="${o.date}">remove</button></div>`).join('')}
+          </div>
           </div>
         </div>
       </div>`;
@@ -470,16 +499,16 @@
     const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
     panel.innerHTML = `
-      <div class="atta-card" style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:.75rem">
-        <div><label class="block atta-muted" style="margin-bottom:.25rem">Year</label>
-          <input id="atta-rep-year" type="number" value="${prev.getFullYear()}" class="atta-input w-20"></div>
-        <div><label class="block atta-muted" style="margin-bottom:.25rem">Month</label>
-          <input id="atta-rep-month" type="number" min="1" max="12" value="${prev.getMonth() + 1}" class="atta-input w-20"></div>
-        <button id="atta-rep-gen" class="atta-btn"><i class="fas fa-file-excel"></i>Generate now</button>
-        <span class="atta-muted">Also generated automatically on the 1st at 08:00 and emailed to the recipients configured above.</span>
+      <div class="card flex flex-wrap items-end gap-3 p-5">
+        <div><label for="atta-rep-year" class="form-label text-xs">Year</label>
+          <input id="atta-rep-year" type="number" value="${prev.getFullYear()}" class="form-input w-24 py-2"></div>
+        <div><label for="atta-rep-month" class="form-label text-xs">Month</label>
+          <input id="atta-rep-month" type="number" min="1" max="12" value="${prev.getMonth() + 1}" class="form-input w-20 py-2"></div>
+        <button id="atta-rep-gen" class="btn btn-primary py-2"><i class="fas fa-file-excel"></i>Generate now</button>
+        <p class="basis-full text-xs leading-relaxed text-gray-500 sm:basis-0 sm:flex-1 sm:self-center">Also generated automatically on the 1st at 08:00 and emailed to the recipients configured above.</p>
       </div>
-      <div class="atta-card atta-card-flush">
-        <table class="atta-table">
+      <div class="card overflow-hidden"><div class="overflow-x-auto">
+        <table class="table-modern">
           <thead>
             <tr><th>Period</th><th>v</th><th>Generated</th>
                 <th>Days</th><th>Students</th><th>Email</th>
@@ -487,16 +516,16 @@
           </thead><tbody>
           ${(data.reports || []).map((r) => `
             <tr>
-              <td class="font-medium">${r.period_year}-${String(r.period_month).padStart(2, '0')}</td>
+              <td class="whitespace-nowrap font-medium tabular-nums text-gray-900">${r.period_year}-${String(r.period_month).padStart(2, '0')}</td>
               <td>${r.version}</td>
-              <td>${r.generated_at.replace('T', ' ').slice(0, 16)}</td>
-              <td>${r.working_days}</td>
-              <td>${r.student_count}</td>
+              <td class="whitespace-nowrap tabular-nums">${r.generated_at.replace('T', ' ').slice(0, 16)}</td>
+              <td class="tabular-nums">${r.working_days}</td>
+              <td class="tabular-nums">${r.student_count}</td>
               <td>${esc(r.email_status)}</td>
-              <td class="atta-mono" title="${esc(r.xlsx_sha256 || '')}">${esc((r.xlsx_sha256 || '').slice(0, 12))}…</td>
-              <td><button class="atta-link" data-dl="${r.id}">download</button></td>
+              <td class="font-mono text-xs text-gray-500" title="${esc(r.xlsx_sha256 || '')}">${esc((r.xlsx_sha256 || '').slice(0, 12))}…</td>
+              <td class="text-right"><button class="btn btn-ghost btn-sm px-2 text-blue-600 hover:bg-blue-50 hover:text-blue-700" data-dl="${r.id}"><i class="fas fa-download"></i>Download</button></td>
             </tr>`).join('')}
-          </tbody></table></div>`;
+          </tbody></table></div></div>`;
 
     panel.querySelector('#atta-rep-gen').onclick = async () => {
       const r = await post('/admin/report', {
@@ -527,23 +556,23 @@
     const { data } = await api('/admin/audit?limit=200');
     const panel = document.getElementById('atta-panel-audit');
     panel.innerHTML = `
-      <div class="atta-card atta-card-flush">
-        <table class="atta-table">
+      <div class="card overflow-hidden"><div class="overflow-x-auto">
+        <table class="table-modern">
           <thead>
             <tr><th>When (UTC)</th><th>Actor</th><th>Action</th>
                 <th>Student</th><th>IP</th><th>Details</th></tr>
           </thead><tbody>
           ${(data.entries || []).map((e) => `
             <tr>
-              <td class="whitespace-nowrap">${e.at.replace('T', ' ').slice(0, 19)}</td>
-              <td>${esc(e.actor)}${e.user_id ? '#' + e.user_id : ''}</td>
-              <td class="font-medium">${esc(e.action)}</td>
-              <td>${e.student_id || ''}</td>
-              <td class="atta-mono">${esc(e.source_ip || '')}</td>
-              <td class="atta-muted max-w-md break-all">${esc(e.details || '')}</td>
+              <td class="whitespace-nowrap font-mono text-xs text-gray-600">${e.at.replace('T', ' ').slice(0, 19)}</td>
+              <td class="whitespace-nowrap">${esc(e.actor)}${e.user_id ? '#' + e.user_id : ''}</td>
+              <td class="whitespace-nowrap font-medium text-gray-900">${esc(e.action)}</td>
+              <td class="tabular-nums">${e.student_id || ''}</td>
+              <td class="whitespace-nowrap font-mono text-xs text-gray-500">${esc(e.source_ip || '')}</td>
+              <td class="min-w-[16rem] max-w-md break-all font-mono text-xs text-gray-500">${esc(e.details || '')}</td>
             </tr>`).join('')}
-          </tbody></table></div>
-      <p class="atta-footnote">This log is append-only at the database level — entries cannot be edited or deleted, by anyone.</p>`;
+          </tbody></table></div></div>
+      <p class="flex items-center gap-2 px-1 text-xs text-gray-500"><i class="fas fa-lock text-gray-400"></i>This log is append-only at the database level — entries cannot be edited or deleted, by anyone.</p>`;
   }
 
   // ---------------------------------------------------------------- init

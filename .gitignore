@@ -7,8 +7,11 @@
 /config/database.php
 /config/mail.php
 /config/attendance.php
+/config/site.php
 .env
 .env.*
+# The attendance example holds placeholders only and documents every setting.
+!/attendance/.env.example
 
 # ---- Attendance module runtime data (frames are biometric evidence) ----
 /attendance/.env
@@ -26,6 +29,14 @@
 /public/uploads/*
 !/public/uploads/.gitkeep
 !/public/uploads/medical_documents/.gitkeep
+
+# Private runtime data (see PRIVATE_DIR in config/constants.php): uploads, logs
+# and report CSVs live here now. Only the guard file and the empty dirs are kept.
+/.private/**
+!/.private/
+!/.private/.htaccess
+!/.private/*/
+!/.private/*/.gitkeep
 
 # Database backups and ad-hoc dumps
 /database/backups/*

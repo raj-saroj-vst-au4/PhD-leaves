@@ -65,12 +65,15 @@ if (empty($target['is_active'])) {
     exit();
 }
 
-// Preserve original admin identity.
+// Preserve original admin identity. pw_fp lets every request of the
+// impersonation re-check the ADMIN too (validateSessionIdentity in auth.php):
+// deactivating, demoting or re-passwording the admin ends the impersonation.
 $adminSnapshot = [
     'user_id'    => $_SESSION['user_id'],
     'user_name'  => $_SESSION['user_name'] ?? null,
     'user_email' => $_SESSION['user_email'] ?? null,
     'user_role'  => $_SESSION['user_role'] ?? null,
+    'pw_fp'      => $_SESSION['pw_fp'] ?? null,
     'started_at' => time(),
 ];
 
@@ -89,10 +92,11 @@ if ($target['role'] === 'student') {
     $studentId = $studentDetails['student_id'] ?? null;
 }
 
-// Swap identity. loginUser() rotates the session ID for us.
+// Swap identity. loginUser() rotates the session ID and records the target's
+// password fingerprint, so the target is re-validated like any other session.
 loginUser($target, $studentId);
 
-// Attach impersonator stash AFTER loginUser (which doesn't touch this key).
+// Attach impersonator stash AFTER loginUser (which clears this key).
 $_SESSION['impersonator'] = $adminSnapshot;
 
 // Redirect to the target user's home page.
