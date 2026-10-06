@@ -105,7 +105,10 @@ $pageTitle = 'Login';
 <div class="flex min-h-screen w-full">
 
     <!-- Brand panel (large screens only; phones get the mark above the card) -->
-    <aside class="relative hidden w-1/2 flex-col justify-between overflow-hidden bg-gradient-to-br from-blue-700 via-blue-600 to-violet-600 p-12 text-white lg:flex xl:p-16">
+    <aside class="relative hidden w-1/2 flex-col justify-between overflow-hidden bg-blue-900 bg-cover bg-center p-12 text-white lg:flex xl:p-16"
+           style="background-image: url('<?php echo asset_url('public/images/login-bg.jpg'); ?>')">
+        <!-- SJMSOM atrium photo under a brand-tinted overlay, so the white text stays readable -->
+        <div class="pointer-events-none absolute inset-0 bg-gradient-to-br from-blue-900/85 via-blue-800/75 to-violet-800/80" aria-hidden="true"></div>
         <!-- Decorative grid and glows -->
         <svg class="pointer-events-none absolute inset-0 h-full w-full text-white opacity-[0.07]" aria-hidden="true">
             <defs>
@@ -164,14 +167,18 @@ $pageTitle = 'Login';
 
     <!-- Sign-in -->
     <main class="relative flex flex-1 flex-col items-center justify-center px-4 py-10 sm:px-6 lg:px-12">
-        <div class="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-blue-100/50 to-transparent lg:hidden" aria-hidden="true"></div>
+        <!-- Phones and tablets (no brand panel): the atrium photo behind the card -->
+        <div class="pointer-events-none absolute inset-0 bg-cover bg-center lg:hidden" style="background-image: url('<?php echo asset_url('public/images/login-bg.jpg'); ?>')" aria-hidden="true"></div>
+        <div class="pointer-events-none absolute inset-0 bg-gradient-to-b from-blue-900/80 via-blue-900/70 to-violet-900/80 lg:hidden" aria-hidden="true"></div>
 
         <div class="relative w-full max-w-md">
             <!-- Brand mark (below lg, where the panel is hidden) -->
             <div class="mb-8 text-center lg:hidden">
-                <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay" width="463" height="200" class="mx-auto h-16 w-auto">
-                <p class="mt-4 text-xl font-semibold tracking-tight text-gray-900"><?php echo SITE_NAME; ?></p>
-                <p class="mt-1 text-sm text-gray-500">SJM School of Management, IIT Bombay</p>
+                <span class="inline-flex rounded-2xl bg-white px-4 py-3 shadow-lg">
+                    <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay" width="463" height="200" class="h-14 w-auto">
+                </span>
+                <p class="mt-4 text-xl font-semibold tracking-tight text-white"><?php echo SITE_NAME; ?></p>
+                <p class="mt-1 text-sm text-blue-100">SJM School of Management, IIT Bombay</p>
             </div>
 
             <!-- Login Card -->
@@ -306,7 +313,7 @@ $pageTitle = 'Login';
             </div>
 
             <!-- Footer (the brand panel carries it on large screens) -->
-            <p class="mt-8 text-center text-sm text-gray-500 lg:hidden">&copy; <?php echo date('Y'); ?> IIT Bombay. All rights reserved.</p>
+            <p class="mt-8 text-center text-sm text-blue-100 lg:hidden">&copy; <?php echo date('Y'); ?> IIT Bombay. All rights reserved.</p>
         </div>
     </main>
 </div>
