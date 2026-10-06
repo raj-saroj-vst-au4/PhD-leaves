@@ -297,6 +297,11 @@ $pageTitle = 'Login';
                     <p class="text-sm text-gray-600">
                         New user? Check your email for an invitation link.
                     </p>
+                    <p class="mt-1.5 text-sm">
+                        <a href="<?php echo BASE_URL; ?>/attendance-guide.php" class="inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-700">
+                            <i class="fas fa-user-check text-xs"></i> How to register your face for attendance
+                        </a>
+                    </p>
                     <p class="mt-1.5 text-xs text-gray-500">
                         Need help? Contact <a href="mailto:<?php echo ADMIN_EMAIL; ?>" class="font-medium text-blue-600 hover:text-blue-700"><?php echo ADMIN_EMAIL; ?></a>
                     </p>

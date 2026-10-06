@@ -138,6 +138,11 @@ $enrollCode = isset($_GET['enroll'])
                 A staff member will give you a short one-time code — enter it below and follow the camera
                 steps. Enrollment only works on the office WiFi, so no one can enroll your face remotely.
             </p>
+            <a href="<?php echo BASE_URL; ?>/attendance-guide.php" target="_blank" rel="noopener"
+               class="inline-flex items-center gap-2 text-sm font-semibold text-blue-700 hover:text-blue-800">
+                <i class="fas fa-book-open"></i> Step-by-step guide with screenshots
+                <i class="fas fa-arrow-right text-xs"></i>
+            </a>
             <div class="flex items-start gap-3 rounded-xl bg-gray-50 p-3.5 text-xs leading-relaxed text-gray-600 ring-1 ring-inset ring-gray-100">
                 <i class="fas fa-lock mt-0.5 text-gray-400"></i>
                 <p>
