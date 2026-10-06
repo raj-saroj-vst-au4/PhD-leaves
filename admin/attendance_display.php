@@ -36,8 +36,8 @@ session_write_close();
     <div class="flex min-h-screen flex-col px-[4vw] py-[4vh]">
         <header class="flex items-center justify-between gap-6">
             <div class="flex items-center gap-3 lg:gap-[1vw]">
-                <span class="att-display-mark inline-flex items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-violet-600 shadow-lg shadow-blue-900/40">
-                    <i class="fas fa-graduation-cap"></i>
+                <span class="inline-flex rounded-2xl bg-white px-[1vw] py-[0.6vw] shadow-lg shadow-black/40">
+                    <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay" width="463" height="200" class="h-[6vh] min-h-[2.5rem] w-auto">
                 </span>
                 <div class="leading-tight">
                     <p class="att-display-brand font-semibold tracking-tight">PhD Time-Off</p>

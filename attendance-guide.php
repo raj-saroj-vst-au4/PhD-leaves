@@ -115,12 +115,12 @@ $faq = [
     <header class="app-navbar sticky top-0 z-40 border-b border-gray-200/80">
         <div class="mx-auto flex h-16 max-w-5xl items-center justify-between gap-4 px-4 sm:px-6">
             <a href="<?php echo BASE_URL; ?>/index.php" class="flex shrink-0 items-center gap-3">
-                <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-sm">
-                    <i class="fas fa-graduation-cap"></i>
-                </span>
+                <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay"
+                     width="463" height="200" class="h-9 w-auto sm:h-11">
+                <span class="h-8 w-px bg-gray-200" aria-hidden="true"></span>
                 <span class="leading-tight">
                     <span class="block text-sm font-semibold text-gray-900">PhD Time-Off</span>
-                    <span class="hidden text-xs text-gray-500 sm:block">SJM School of Management</span>
+                    <span class="hidden text-xs text-gray-500 sm:block">Leave &amp; attendance</span>
                 </span>
             </a>
             <?php if ($signedIn && getCurrentUserRole() === 'student'): ?>

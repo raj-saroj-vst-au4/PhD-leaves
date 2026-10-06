@@ -104,11 +104,10 @@ $pageTitle = 'Complete Registration';
         <div class="pointer-events-none absolute -right-32 -top-32 h-96 w-96 rounded-full bg-white/10 blur-3xl" aria-hidden="true"></div>
         <div class="pointer-events-none absolute -bottom-40 -left-24 h-[28rem] w-[28rem] rounded-full bg-violet-400/30 blur-3xl" aria-hidden="true"></div>
 
-        <div class="relative flex items-center gap-3">
-            <span class="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-white/15 text-lg ring-1 ring-inset ring-white/25">
-                <i class="fas fa-graduation-cap"></i>
+        <div class="relative">
+            <span class="inline-flex rounded-2xl bg-white px-4 py-3 shadow-lg shadow-blue-900/20">
+                <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay" width="463" height="200" class="h-14 w-auto">
             </span>
-            <span class="text-sm font-semibold text-white/90">IIT Bombay</span>
         </div>
 
         <div class="relative max-w-md">
@@ -156,9 +155,7 @@ $pageTitle = 'Complete Registration';
         <div class="relative w-full max-w-md">
             <!-- Brand mark (below lg, where the panel is hidden) -->
             <div class="mb-8 text-center lg:hidden">
-                <span class="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-700 via-blue-600 to-violet-600 text-2xl text-white shadow-lg">
-                    <i class="fas fa-graduation-cap"></i>
-                </span>
+                <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay" width="463" height="200" class="mx-auto h-16 w-auto">
                 <p class="mt-4 text-xl font-semibold tracking-tight text-gray-900"><?php echo SITE_NAME; ?></p>
                 <p class="mt-1 text-sm text-gray-500">Complete your registration</p>
             </div>

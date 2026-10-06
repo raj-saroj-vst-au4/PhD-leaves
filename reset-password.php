@@ -99,9 +99,7 @@ $pageTitle = 'Reset Password';
     <div class="relative w-full max-w-md">
         <!-- Brand mark -->
         <a href="<?php echo BASE_URL; ?>/login.php" class="mb-8 block text-center">
-            <span class="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-700 via-blue-600 to-violet-600 text-2xl text-white shadow-lg">
-                <i class="fas fa-graduation-cap"></i>
-            </span>
+            <img src="<?php echo asset_url('public/images/som-iitb-logo.png'); ?>" alt="SJM School of Management, IIT Bombay" width="463" height="200" class="mx-auto h-16 w-auto">
             <span class="mt-4 block text-xl font-semibold tracking-tight text-gray-900"><?php echo SITE_NAME; ?></span>
             <span class="mt-1 block text-sm text-gray-500">SJM School of Management, IIT Bombay</span>
         </a>
