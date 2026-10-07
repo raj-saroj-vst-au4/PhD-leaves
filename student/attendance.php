@@ -45,6 +45,19 @@ requireRole('student');
 $enrollCode = isset($_GET['enroll'])
     ? substr(preg_replace('/\D/', '', (string) $_GET['enroll']), 0, 6)
     : '';
+
+// Liveness v2's face tracker (MediaPipe Face Landmarker, vendored — see
+// public/vendor/mediapipe/README.txt). liveness.js fetches these only when a
+// v2 capture starts. Each URL carries its own mtime (asset_url), so replacing a
+// file in a deploy can never be masked by a cached old copy of it.
+$mpAssets = json_encode([
+    'bundle'     => asset_url('public/vendor/mediapipe/vision_bundle.js'),
+    'simdJs'     => asset_url('public/vendor/mediapipe/wasm/vision_wasm_internal.js'),
+    'simdWasm'   => asset_url('public/vendor/mediapipe/wasm/vision_wasm_internal.wasm'),
+    'nosimdJs'   => asset_url('public/vendor/mediapipe/wasm/vision_wasm_nosimd_internal.js'),
+    'nosimdWasm' => asset_url('public/vendor/mediapipe/wasm/vision_wasm_nosimd_internal.wasm'),
+    'model'      => asset_url('public/vendor/mediapipe/face_landmarker.task'),
+], JSON_UNESCAPED_SLASHES);
 ?>
 
 <?php /* header.php already opens <main class="max-w-7xl mx-auto px-4 …">; this
@@ -75,6 +88,7 @@ $enrollCode = isset($_GET['enroll'])
      data-ticket-url="<?php echo BASE_URL; ?>/api/attendance_ticket.php"
      data-base="<?php echo BASE_URL; ?>"
      data-secure-base="<?php echo SITE_DOMAIN . BASE_URL; ?>"
+     data-mp-assets="<?php echo sanitize($mpAssets); ?>"
      data-enroll-code="<?php echo sanitize($enrollCode); ?>">
 
     <!-- Today: status + the one primary action -->
@@ -101,13 +115,39 @@ $enrollCode = isset($_GET['enroll'])
             <p class="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-blue-200 ring-1 ring-inset ring-white/10">
                 <i class="fas fa-shield-alt"></i><span id="att-capture-progress">Live face check</span>
             </p>
-            <p id="att-capture-step" class="mt-3 flex min-h-[3.5rem] items-center justify-center text-xl font-semibold leading-snug text-white sm:text-2xl">Starting camera…</p>
-            <?php /* .att-frame sets the 3:4 size; faceguide.js appends its pose-guide
-                     canvas (.att-ring) inside this wrapper, over the video. */ ?>
+            <?php /* Liveness v2 (liveness.js) lists the challenge's steps here and
+                     ticks them off; empty — and so hidden — for the original flow. */ ?>
+            <ol id="att-steps" class="att-steps mt-3 flex items-center justify-center gap-2 empty:hidden" aria-label="Steps"></ol>
+            <p id="att-capture-step" class="att-capture-step mt-3 flex min-h-[3.5rem] items-center justify-center text-xl font-semibold leading-snug text-white sm:text-2xl" aria-live="polite">Starting camera…</p>
+            <?php /* .att-frame sets the 3:4 size. The original flow's faceguide.js
+                     appends its canvas (.att-ring) in here; liveness v2 drives the
+                     face oval (#att-guide), the direction cue (#att-cue) and the
+                     finishing tick (#att-done) below. */ ?>
             <div class="att-frame relative mx-auto mt-4 overflow-hidden rounded-[1.75rem] bg-black shadow-2xl ring-1 ring-white/15">
                 <video id="att-video" autoplay playsinline muted
                        class="h-full w-full object-cover"></video>
                 <div class="att-vignette pointer-events-none absolute inset-0"></div>
+                <svg id="att-guide" class="att-guide hidden" viewBox="0 0 300 400" data-state="search" aria-hidden="true">
+                    <defs>
+                        <mask id="att-guide-mask">
+                            <rect width="300" height="400" fill="#fff"/>
+                            <ellipse cx="150" cy="188" rx="100" ry="130" fill="#000"/>
+                        </mask>
+                    </defs>
+                    <rect class="att-guide-veil" width="300" height="400" mask="url(#att-guide-mask)"/>
+                    <ellipse class="att-guide-oval" cx="150" cy="188" rx="100" ry="130"/>
+                    <?php /* Radii swapped and turned a quarter, so the stroke — which
+                             starts at 3 o'clock — fills from 12 o'clock, clockwise. */ ?>
+                    <ellipse class="att-guide-fill" cx="150" cy="188" rx="130" ry="100" pathLength="100"
+                             transform="rotate(-90 150 188)"/>
+                </svg>
+                <div id="att-cue" class="att-cue hidden" aria-hidden="true"></div>
+                <div id="att-done" class="att-done hidden" aria-hidden="true">
+                    <svg viewBox="0 0 96 96"><circle cx="48" cy="48" r="44"/>
+                        <path class="att-done-ok" d="M28 50 l13 13 l27 -29" pathLength="70"/>
+                        <path class="att-done-wait" d="M48 24 v26 l15 10" pathLength="70"/>
+                        <path class="att-done-fail" d="M33 33 l30 30 M63 33 l-30 30" pathLength="70"/></svg>
+                </div>
                 <div id="att-countdown"
                      class="absolute bottom-4 left-1/2 flex h-14 w-14 -translate-x-1/2 items-center justify-center rounded-full bg-black/50 text-3xl font-semibold tabular-nums text-white ring-1 ring-white/20 backdrop-blur empty:hidden"></div>
             </div>
@@ -116,7 +156,7 @@ $enrollCode = isset($_GET['enroll'])
                 <input id="att-strict-code" inputmode="numeric" maxlength="6"
                        class="mx-auto mt-2 block w-48 rounded-xl border-0 bg-white py-2.5 text-center font-mono text-2xl font-semibold tracking-[0.35em] text-gray-900 focus:outline-none focus:ring-4 focus:ring-blue-400/40" placeholder="······">
             </div>
-            <p id="att-capture-msg" class="mt-4 min-h-[1.25rem] text-sm text-gray-300"></p>
+            <p id="att-capture-msg" class="att-capture-msg mt-4 min-h-[1.25rem] text-sm text-gray-300" aria-live="polite"></p>
             <button id="att-capture-cancel" class="btn mt-5 w-full bg-white/10 text-white ring-1 ring-inset ring-white/20 hover:bg-white/20 sm:w-auto sm:px-8">
                 Cancel
             </button>
@@ -194,10 +234,12 @@ $enrollCode = isset($_GET['enroll'])
          enough; the shims apply as a side effect. It cannot affect a permission
          the user has already denied — no script can re-open that prompt. */ ?>
 <script src="<?php echo asset_url('public/vendor/webrtc-adapter/adapter.js'); ?>"></script>
-<?php /* faceguide.js only defines window.FaceGuide; the ~1.3 MB tracker library and
-         its models are fetched lazily on the first capture, so they never touch
-         this page's load. */ ?>
+<?php /* faceguide.js (the original flow) and liveness.js (liveness v2) only define
+         window.FaceGuide / window.Liveness; their tracker libraries and models
+         are fetched lazily on the first capture — whichever one the server's
+         flag picks — so neither touches this page's load. */ ?>
 <script src="<?php echo asset_url('public/js/faceguide.js'); ?>"></script>
+<script src="<?php echo asset_url('public/js/liveness.js'); ?>"></script>
 <script src="<?php echo asset_url('public/js/attendance.js'); ?>"></script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

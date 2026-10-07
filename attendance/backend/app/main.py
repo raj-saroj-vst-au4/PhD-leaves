@@ -182,6 +182,9 @@ def netcheck(request: Request, me: Principal = Depends(current_principal)):
             "open_now": window.is_open_at(now),
         },
         "strict_mode": get_setting("strict_mode", "0") == "1",
+        # Which capture flow the page should prepare (liveness v2 or the
+        # original); the challenge itself is still decided at issue time.
+        "liveness": marking.liveness_protocol(me.student_id) if me.student_id else 1,
         "device_enrolled": bool(device and device["status"] == "active"),
         "face_enrolled": bool(template),
         "pending_review": bool(pending),
@@ -212,11 +215,19 @@ def mark_challenge(request: Request, me: Principal = Depends(current_student)):
             "Your face is not enrolled yet. Please complete enrollment at the SOM office.",
         )
 
-    challenge = faces.new_challenge()
+    # Which protocol this student is on (att_settings liveness_v2 /
+    # liveness_v2_students). It is stored with the challenge, so the attempt is
+    # judged by the protocol it was issued under even if the flag flips.
+    protocol = marking.liveness_protocol(me.student_id)
+    if protocol == faces.LIVENESS_V2:
+        plan = faces.new_challenge_v2(flash=marking.flash_enabled())
+    else:
+        plan = faces.Challenge(faces.LIVENESS_V1, tuple(faces.new_challenge()))
+    challenge = list(plan.steps)
     raw = secrets.token_urlsafe(24)
-    marking.issue_challenge(me.student_id, device["id"], challenge, day,
+    marking.issue_challenge(me.student_id, device["id"], plan.spec(), day,
                             CHALLENGE_TTL_SECONDS, hash_token(raw))
-    return {
+    body = {
         "ok": True,
         "token": raw,
         "challenge": challenge,
@@ -226,18 +237,36 @@ def mark_challenge(request: Request, me: Principal = Depends(current_student)):
         "frames_per_step": faces.FRAMES_PER_STEP,
         "expires_in": CHALLENGE_TTL_SECONDS,
         "strict_mode": get_setting("strict_mode", "0") == "1",
+        "protocol": protocol,
     }
+    if protocol == faces.LIVENESS_V2:
+        # v2 steps hold different numbers of frames (one per flash colour), so
+        # the count is given per step. The flash colours exist only from this
+        # moment and only in this response: a recording made earlier cannot
+        # know them.
+        body["frame_counts"] = plan.frame_counts()
+        if plan.flash_colors:
+            body["flash"] = {
+                "colors": ["#%02x%02x%02x" % rgb for rgb in plan.flash_rgb()],
+                "durations_ms": list(plan.flash_ms),
+            }
+    return body
 
 
 def _prompt_for(pose: str) -> str:
-    # Deliberately no LEFT/RIGHT: which physical direction reads as +yaw depends
-    # on the camera image and the model's Euler convention, and naming the wrong
-    # one made most real attempts fail. 'other' is relative to the turn the
-    # student has just made, so it cannot be mis-scored that way.
+    # v1 deliberately names no side: which physical direction reads as +yaw
+    # depends on the camera image and the model's Euler convention, and naming
+    # the wrong one made most real attempts fail. 'other' is relative to the
+    # turn the student has just made, so it cannot be mis-scored that way.
+    # v2 names sides in the STUDENT's terms, judged by faces.turn_ratio.
     return {
         faces.POSE_CENTRE: "Look straight at the camera",
         faces.POSE_TURN: "Turn your head to one side",
         faces.POSE_OTHER: "Now turn your head to the OTHER side",
+        faces.POSE_LEFT: "Turn your head to your LEFT",
+        faces.POSE_RIGHT: "Turn your head to your RIGHT",
+        faces.POSE_BLINK: "Look at the camera and blink",
+        faces.POSE_FLASH: "Hold still while the screen changes colour",
     }.get(pose, "Look at the camera")
 
 
@@ -256,8 +285,8 @@ def _peek_challenge(raw_token: str, student_id: int) -> dict:
         "AND consumed_at IS NULL AND expires_at>NOW()",
         (hash_token(raw_token), student_id),
     )
-    steps = faces.parse_challenge(row["challenge"]) if row else None
-    if not steps:
+    plan = faces.parse_challenge_spec(row["challenge"]) if row else None
+    if not plan:
         raise _challenge_invalid()
 
     # Timing, from the database clock at millisecond precision. The upper bound
@@ -271,10 +300,11 @@ def _peek_challenge(raw_token: str, student_id: int) -> dict:
             (row["id"],),
         )
         elapsed = (timing["us"] or 0) / 1e6 if timing else None
-        if elapsed is not None and elapsed < faces.MIN_SECONDS_PER_STEP * len(steps):
+        if elapsed is not None and elapsed < plan.min_seconds():
             raise MarkError(400, "CHALLENGE_TOO_FAST",
                             "That was quicker than the steps allow. Tap Mark Attendance and follow each step.")
-    row["steps"] = steps
+    row["steps"] = list(plan.steps)
+    row["plan"] = plan
     return row
 
 
@@ -347,7 +377,7 @@ def _mark_gates(request: Request, me: Principal, token: str, strict_code: str,
     return device, strict_used, challenge_row
 
 
-def _judge_mark(student_id: int, blobs: list[bytes], steps: list[str]) -> faces.VerifyResult:
+def _judge_mark(student_id: int, blobs: list[bytes], steps: list[str] | faces.Challenge) -> faces.VerifyResult:
     """Decode + detect + embed + judge. Runs on the face-engine pool; the cohort
     is loaded here too so a queued request holds no parsed templates."""
     template_row = marking.active_template(student_id)
@@ -476,9 +506,10 @@ async def mark(
     device, strict_used, challenge_row = await run_in_threadpool(
         _mark_gates, request, me, token, strict_code, ip, day)
     steps = challenge_row["steps"]
+    plan = challenge_row.get("plan") or faces.Challenge(faces.LIVENESS_V1, tuple(steps))
 
     try:
-        blobs = await _read_frames(frames, expected=faces.FRAMES_PER_STEP * len(steps))
+        blobs = await _read_frames(frames, expected=sum(plan.frame_counts()))
         hashes = [hashlib.sha256(b).hexdigest() for b in blobs]
         async with faces.engine_slot():
             # The challenge is used up, and a budget slot claimed, only once a
@@ -507,7 +538,9 @@ async def mark(
                 )
             else:
                 try:
-                    result = await faces.run_in_engine(_judge_mark, me.student_id, blobs, steps)
+                    result = await faces.run_in_engine(
+                        _judge_mark, me.student_id, blobs,
+                        plan if plan.protocol == faces.LIVENESS_V2 else steps)
                 except Exception:
                     log.exception("face verification crashed (attempt %s)", attempt_id)
                     await run_in_threadpool(marking.finish_attempt, attempt_id,
@@ -1055,9 +1088,13 @@ def admin_set_setting(
         "face_match_threshold", "face_review_threshold", "liveness_threshold",
         "crossmatch_margin", "max_attempts_per_day", "frame_retention_days",
         "strict_mode", "report_recipients", "enrollment_min_frames", "attendance_enabled",
+        # liveness v2 (faces.py "Liveness v2"; RUNBOOK "Liveness v2")
+        "liveness_v2", "liveness_v2_students", "flash_enabled",
+        "flash_min_signal", "flash_min_correlation", "antispoof_review_threshold",
     }
     if key not in allowed:
         raise MarkError(400, "BAD_SETTING", "Unknown setting.")
+    value = _valid_setting(key, value)
 
     if key == "strict_mode" and value == "1" and not get_setting("strict_code_secret"):
         execute(
@@ -1074,6 +1111,32 @@ def admin_set_setting(
     audit("settings.updated", actor_type="admin", user_id=me.user_id, source_ip=client_ip(request),
           details={"key": key, "value": value})
     return {"ok": True}
+
+
+def _valid_setting(key: str, value: str) -> str:
+    """Normalise the liveness v2 knobs, refusing values the backend would
+    silently misread (a typo in the pilot list must not quietly drop it)."""
+    value = (value or "").strip()
+    if key in ("liveness_v2", "flash_enabled"):
+        if value not in ("0", "1"):
+            raise MarkError(400, "BAD_VALUE", "Use 1 (on) or 0 (off).")
+    elif key == "liveness_v2_students":
+        try:
+            ids = json.loads(value or "[]")
+            if not isinstance(ids, list):
+                raise ValueError
+            ids = sorted({int(v) for v in ids})
+        except (TypeError, ValueError):
+            raise MarkError(400, "BAD_VALUE", "Give a JSON list of student ids, e.g. [12, 40].") from None
+        value = json.dumps(ids)
+    elif key in ("flash_min_signal", "flash_min_correlation", "antispoof_review_threshold"):
+        try:
+            number = float(value)
+        except ValueError:
+            raise MarkError(400, "BAD_VALUE", "Enter a number.") from None
+        if not 0 <= number <= 1.0:
+            raise MarkError(400, "BAD_VALUE", "Enter a number between 0 and 1.")
+    return value
 
 
 @app.post("/api/admin/allowlist")

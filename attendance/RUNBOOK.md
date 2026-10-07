@@ -27,6 +27,8 @@ trust each other through short-lived HMAC tickets.
    template, and cross-match against the whole cohort (so marking on someone
    else's account is caught and identified). Borderline → **pending review**
    (never a silent absence); clear fail → recorded with photos as evidence.
+   - (This is the default protocol. Liveness v2 — named sides, a blink and a
+     colour flash — is described in its own section below.)
    - The challenge is one of 10 sequences of 3–4 steps, drawn uniformly with a
      CSPRNG per attempt: *centre*, a *turn* to either side, and a turn to the
      *other* side. Sides are never named (left/right was mis-scored in
@@ -67,6 +69,95 @@ trust each other through short-lived HMAC tickets.
 
 Every failure is logged with a stable code (see `ops/test/gate-matrix.sh`).
 
+## Liveness v2 (behind a flag — off by default)
+
+A second challenge protocol, for students on the flag. Everything in gate 7
+above still applies (token, timing floor, issue caps, frame-hash replay,
+duplicate and mirrored frames, identity on every frame, cross-match, budget);
+what changes is the challenge and how the phone captures it.
+
+**What the student does (~8–9 s).** Look straight, then — in a random order
+drawn per attempt (24 orders) — turn the head to *their* LEFT, to their RIGHT,
+blink once, and hold still ~3 s while the screen flashes 7 colours. Each step
+is captured automatically once the pose is actually *held* (≥400 ms, steady,
+face big enough, sharp enough, light enough): the phone never sends a frame of
+a moving head, which is what caused every `POSE_CHALLENGE_FAILED` in the first
+production week. The phone uses Google MediaPipe Face Landmarker (vendored in
+`public/vendor/mediapipe/`, see its README.txt — no CDN, no telemetry);
+`public/js/liveness.js` runs it, falling back to timed prompts if it cannot
+load. Enrollment for these students is guided the same way: straight ×2, left
+×2, right ×2, chin up, chin down (8 frames; `enrollment_min_frames` 5).
+
+**How the server judges it** (`faces.py`, "Liveness v2"):
+- *Sides* are named and judged from keypoint geometry, not the model's yaw sign
+  (which is what broke named sides before): the nose tip's offset from the eye
+  midpoint along the eye line, in eye distances; positive = the student's left
+  in the raw (un-mirrored) frame. Turn ≥ 0.11 (≈15°), centre ≤ 0.085 (≈12°).
+  Verified on a real photo (insightface's t1.jpg: a man visibly turned to his
+  right reads -0.47; the model's yaw sign would have called it "left") and end
+  to end: frames the phone captured as LEFT/RIGHT read +0.29/-0.27 on the
+  server.
+- *Blink*: an eyes-shut frame (taken by the phone at the peak of the blink)
+  and an eyes-open frame after it, compared with this student's own open eyes
+  in the burst — eye aspect ratio (68 landmarks) and the dark iris area in the
+  eye box. Clearly changed → seen; clearly unchanged → `BLINK_CHALLENGE_FAILED`;
+  in between → office review (`blink_unclear`). The landmark model barely sees
+  eyelids, so the iris measure does most of the work. The shut-eye frame is not
+  held to the match threshold, only to "same person" and the cross-match.
+- *Colour flash*: the screen shows 7 server-chosen colours (340–500 ms each,
+  never faster than 3 changes a second); one frame per colour. The skin's
+  colour change from flash to flash (relative to the background, which cancels
+  the camera's exposure and white balance) must correlate with the commanded
+  colours. A looping or relayed video cannot do that. Strong and correlated →
+  pass; strong and uncorrelated, or perfectly constant → `FLASH_CHALLENGE_FAILED`;
+  too weak to judge (bright room, dim screen) → office review (`flash_weak`).
+- *Passive anti-spoof*: MiniFASNetV2 (print / live / replay) on the two centre
+  frames. **Review flag only** — a spoof probability ≥ the threshold sends an
+  otherwise-passing mark to review (`antispoof`); it never fails or passes one.
+- Anything that sends a v2 mark to review shows as `LIVENESS_REVIEW`, with
+  `detail.review_reasons` (e.g. `["flash_weak"]`) and all measurements
+  (`turn_ratio`, `ear`, `eye_dark`, each step's `flash` signal/correlation,
+  `antispoof`) in `att_attempts.detail` — the material for tuning.
+- A v2 burst is 15 frames (~8 s of face-engine time per mark on the dev box,
+  against ~4-5 s for v1's 6-8 frames; flash frames already skip the 3D
+  landmarks and detect at 320 px).
+  Watch for `SERVER_BUSY` at the 09:00 rush when it goes to everyone.
+
+**Switching it on.**
+```sql
+-- one student first (students.id, not users.id):
+SELECT s.id, s.roll_number, u.name FROM students s JOIN users u ON u.id=s.user_id WHERE u.email='…';
+INSERT INTO att_settings (skey, svalue) VALUES ('liveness_v2_students', '[123]')
+  ON DUPLICATE KEY UPDATE svalue=VALUES(svalue);
+-- everyone:
+INSERT INTO att_settings (skey, svalue) VALUES ('liveness_v2', '1')
+  ON DUPLICATE KEY UPDATE svalue=VALUES(svalue);
+```
+or in the office UI: Attendance → Configuration → *Liveness v2 for everyone* /
+*Liveness v2 pilot students* (audited as `settings.updated`). The pilot list is
+honoured while `liveness_v2` is `0`. The protocol is fixed when a challenge is
+issued, so flipping the flag never affects an attempt in flight. A student on
+v2 who was enrolled with the ring sweep does not need to re-enroll.
+
+**Tuning knobs** (`att_settings`, also in Configuration):
+| key | default | meaning |
+|---|---|---|
+| `flash_min_signal` | 0.008 | skin colour change (RMS, log units) below which the flash cannot be judged → review |
+| `flash_min_correlation` | 0.75 | how closely the skin must follow the colours (chance level ≈1.5% at 0.75) |
+| `flash_enabled` | 1 | `0` drops the flash from new v2 challenges (kill switch if the room is too bright) |
+| `antispoof_review_threshold` | 0.90 | MiniFASNet spoof probability that sends a mark to review |
+
+Calibrate in the office before going wide: mark a few times on the pilot
+account, then read `detail` of those attempts —
+`SELECT id, verdict, fail_code, JSON_EXTRACT(detail,'$.review_reasons'), JSON_EXTRACT(detail,'$.steps') FROM att_attempts WHERE student_id=… ORDER BY id DESC LIMIT 5;`
+If genuine flashes show correlation > 0.9 but signal just under 0.008, lower
+`flash_min_signal` (to ~0.005); if `antispoof` keeps sending genuine marks to
+review, raise its threshold (0.97) — it is the least reliable signal here.
+
+**Rolling back.** `liveness_v2` = `0` and `liveness_v2_students` = `[]`: the
+next challenge is v1 and the page runs the original guide. No data migration,
+nothing to undo; v2 attempts stay on record with `challenge_spec` `v2:…`.
+
 ## Layout
 
 ```
@@ -74,7 +165,8 @@ attendance/
 ├── backend/            FastAPI app (Docker)
 │   ├── app/            config, db, auth, timewindow, faces, marking, reports, main
 │   ├── tests/          unit tests (window engine, challenge/judgement, uploads,
-│   │                   budget/engine/pool concurrency, report roster) — pytest
+│   │                   budget/engine/pool concurrency, report roster,
+│   │                   liveness v2) — pytest
 │   ├── Dockerfile      python:3.12-slim + InsightFace (model baked in)
 │   └── requirements.txt
 ├── docker-compose.yml  backend only, binds 127.0.0.1:3070
@@ -95,10 +187,13 @@ attapi/index.php + .htaccess   PHP forwarder to the loopback backend (the defaul
                                transport; sets the trusted X-Client-IP)
 api/attendance_ticket.php      mints fresh tickets for the browser
 student/attendance.php         student page  + public/js/attendance.js
+                               + faceguide.js (v1 guide, face-api) + liveness.js
+                               (v2 guide, public/vendor/mediapipe/)
 admin/attendance.php           office dashboard + public/js/attendance-admin.js
 admin/attendance_display.php   strict-mode office screen
 database/migrations/2026_07_27_attendance.sql
 database/migrations/2026_09_23_attendance_backend.sql   (RESTRICT FKs, challenge timing)
+database/migrations/2026_10_07_liveness_v2.sql          (seeds the liveness v2 settings)
 ```
 
 ## First-time install

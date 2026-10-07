@@ -10,8 +10,16 @@
   if (!root) return;
 
   const API = root.dataset.apiBase;
-  // Where the vendored face-tracking assets live (loaded on demand).
+  // Where the vendored face-tracking assets live (loaded on demand): face-api
+  // for the original flow (faceguide.js), MediaPipe for liveness v2
+  // (liveness.js — its asset URLs come from the page, each mtime-busted).
   const BASE = root.dataset.base || '';
+  const MP_ASSETS = root.dataset.mpAssets || '';
+  /** liveness.js's tracker, or false — also when the script itself is missing
+   *  (a stale cached page, a blocked file): v2 then uses its timed prompts. */
+  async function loadLiveness() {
+    return window.Liveness ? Liveness.ensureLoaded(MP_ASSETS) : false;
+  }
   let ticket = root.dataset.ticket;
   const ticketUrl = root.dataset.ticketUrl;
 
@@ -480,10 +488,36 @@
     try { if (video.paused) await video.play(); } catch (e) { /* autoplay attrs cover it */ }
   }
 
-  function closeCamera() {
+  function stopStream() {
     if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  }
+
+  const cancelBtn = $('att-capture-cancel');
+  function closeCamera() {
+    stopStream();
     overlay.classList.add('hidden');
     setProgress(0, 0);
+    if (window.Liveness) Liveness.reset();
+    stepLabel.textContent = '';
+    captureMsg.textContent = '';
+    cancelBtn.textContent = 'Cancel';
+  }
+
+  /** Liveness v2 ends inside the overlay — a tick, an hourglass or a cross on
+   *  the frame and the server's words under it — instead of an alert(). A mark
+   *  closes itself after a moment; anything to read waits for "Done". */
+  async function showResult(kind, title, message, autoCloseMs) {
+    stopStream();
+    if (window.Liveness) Liveness.finish(kind);
+    setProgress(0, 0);
+    stepLabel.textContent = title;
+    captureMsg.textContent = message || '';
+    cancelBtn.textContent = kind === 'fail' ? 'Close' : 'Done';
+    if (kind === 'ok') { try { if (navigator.vibrate) navigator.vibrate([30, 60, 30]); } catch (e) { /* unsupported */ } }
+    if (autoCloseMs) {
+      await wait(autoCloseMs);
+      if (!overlay.classList.contains('hidden') && cancelBtn.textContent === 'Done') closeCamera();
+    }
   }
 
   /** "Step n of N" in the overlay's eyebrow while marking; its default label otherwise. */
@@ -551,11 +585,15 @@
     try {
       // Camera and face tracker first, challenge second: the challenge lives
       // for two minutes from issue, and the tracker's first load (download +
-      // shader warm-up) can take a good part of that on a slow phone.
+      // shader warm-up) can take a good part of that on a slow phone. Which
+      // tracker: the one the server's flag points this student at (netcheck);
+      // the challenge below has the final say.
       stepLabel.textContent = 'Starting camera…';
       overlay.classList.remove('hidden');
       await openCamera();
-      const guideReady = await FaceGuide.ensureLoaded(BASE);
+      const wantV2 = !!(net && net.liveness === 2);
+      if (wantV2) stepLabel.textContent = 'Getting the face guide ready…';
+      let guideReady = wantV2 ? await loadLiveness() : await FaceGuide.ensureLoaded(BASE);
       if (cancelled) throw new Error('cancelled');
 
       const { status, data } = await api('/mark/challenge', { method: 'POST' });
@@ -565,6 +603,12 @@
         return;
       }
       const issuedAt = Date.now();
+      const v2 = data.protocol === 2;
+      if (v2 !== wantV2) {
+        // The flag changed since the page loaded: get the other tracker.
+        guideReady = v2 ? await loadLiveness() : await FaceGuide.ensureLoaded(BASE);
+        if (cancelled) throw new Error('cancelled');
+      }
 
       const strictNeeded = data.strict_mode;
       $('att-strict-box').classList.toggle('hidden', !strictNeeded);
@@ -578,7 +622,35 @@
       // many frames it expects per step; each step is checked in its own frames.
       const perStep = data.frames_per_step || 2;
       let frames = null;
-      if (guideReady) {
+      if (v2) {
+        // Liveness v2: named turns, a blink and the colour flash, each step
+        // captured only once it is actually performed (liveness.js).
+        if (!window.Liveness) {
+          closeCamera();
+          alert('The attendance page did not load completely. Please reload it and try again.');
+          return;
+        }
+        if (guideReady) {
+          try {
+            frames = await Liveness.runMark({
+              video, data, isCancelled: () => cancelled, onStep: setProgress,
+            });
+          } catch (e) {
+            if (String(e.message) === 'cancelled') throw e;
+            console.warn('[attendance] live guide gave up:', e && e.message, Liveness.lastError());
+            frames = null;
+          }
+        }
+        if (!frames) {
+          captureMsg.textContent = guideReady
+            ? 'Live guide could not track your face — using timed prompts.'
+            : 'Live guide unavailable on this device — using timed prompts.';
+          if (!guideReady) console.warn('[attendance] liveness:', Liveness.lastError());
+          frames = await Liveness.runTimed({
+            data, grab: grabFrame, countdown, isCancelled: () => cancelled, onStep: setProgress,
+          });
+        }
+      } else if (guideReady) {
         try {
           frames = await FaceGuide.runMark({
             video, grab: grabFrame, challenge: data.challenge, prompts: data.prompts, perStep,
@@ -590,7 +662,7 @@
           frames = null;                       // tracker gave up → timed capture
         }
       }
-      if (!frames) {
+      if (!frames && !v2) {
         // Say so rather than silently degrading: an invisible fallback is
         // indistinguishable from a broken feature.
         captureMsg.textContent = guideReady
@@ -639,6 +711,17 @@
         result = await api('/mark', { method: 'POST', body: form });
       }
       if (cancelled) throw new Error('cancelled');
+
+      if (v2) {
+        if (result.status === 200 && result.data.ok && result.data.status === 'marked') {
+          showResult('ok', 'You’re marked present', result.data.message, 2600);
+        } else if (result.status === 200 && result.data.ok) {
+          showResult('wait', 'Sent to the office for review', result.data.message);
+        } else {
+          showResult('fail', 'Not verified', result.data.message || 'Verification failed. Please try again.');
+        }
+        return;
+      }
       closeCamera();
 
       if (result.status === 200 && result.data.ok) {
@@ -691,14 +774,26 @@
     }
     cancelled = false;
     try {
+      stepLabel.textContent = 'Starting camera…';
       overlay.classList.remove('hidden');
       $('att-strict-box').classList.add('hidden');
       await openCamera();
-      // Enrollment is the one-off, thorough capture: sweep the head around the
-      // ring so the template holds several angles. Same fallback contract.
+      // Enrollment is the one-off, thorough capture: the template needs several
+      // angles. Liveness v2 guides the student through them one held pose at a
+      // time (straight, left, right, up, down); the original flow sweeps the
+      // head around faceguide.js's ring. Same fallback contract either way.
       let frames = null;
-      const guideReady = await FaceGuide.ensureLoaded(BASE);
-      if (guideReady) {
+      const v2 = !!(net && net.liveness === 2);
+      const guideReady = v2 ? await loadLiveness() : await FaceGuide.ensureLoaded(BASE);
+      if (v2 && guideReady) {
+        try {
+          frames = await Liveness.runEnroll({ video, isCancelled: () => cancelled, onStep: setProgress });
+        } catch (e) {
+          if (String(e.message) === 'cancelled') throw e;
+          frames = null;
+          if (window.Liveness) Liveness.reset();
+        }
+      } else if (guideReady) {
         try {
           frames = await FaceGuide.runEnroll({
             video, grab: grabFrame, stepEl: stepLabel, msgEl: captureMsg,
@@ -713,16 +808,21 @@
         captureMsg.textContent = guideReady
           ? 'Live guide could not track your face — using timed capture.'
           : 'Live guide unavailable on this device — using timed capture.';
-        if (!guideReady) console.warn('[attendance] face guide:', FaceGuide.lastError());
+        if (!guideReady) console.warn('[attendance] face guide:', v2 && window.Liveness ? Liveness.lastError() : FaceGuide.lastError());
         frames = await guidedCapture(ENROLL_PROMPTS, 2);
       }
 
+      setProgress(0, 0);
       stepLabel.textContent = 'Building your face profile…';
       const form = new FormData();
       form.append('token', code);
       frames.forEach((blob, i) => form.append('frames[]', blob, `e${i}.jpg`));
 
       const { status, data } = await api('/enroll/capture', { method: 'POST', body: form });
+      if (v2 && status === 200 && data.ok) {
+        await showResult('ok', 'You’re enrolled', 'This phone is now your attendance device.', 2600);
+        return;
+      }
       closeCamera();
       if (status === 200 && data.ok) {
         alert('Enrollment complete. This phone is now your attendance device.');

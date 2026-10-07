@@ -57,7 +57,8 @@ $steps = [
                  . '<li><strong>Slowly move your head in a circle</strong> — left, up, right, down. Each part of the ring lights up as it is captured.</li>'
                  . '<li>Keep going until the message reads <strong>6/6 captured</strong>; the app then shows “Building your face profile…”.</li>'
                  . '</ol>'
-                 . '<p class="mt-3">On some phones the live guide is replaced by simple timed prompts — look straight, turn left, turn right, tilt up, tilt down, look straight again. Just follow each one.</p>',
+                 . '<p class="mt-3">On some phones the live guide is replaced by simple timed prompts — look straight, turn left, turn right, tilt up, tilt down, look straight again. Just follow each one.</p>'
+                 . '<p class="mt-3"><strong>Newer guided check</strong> (being introduced gradually — you may see this instead of the ring): an oval and an arrow. Look straight, then turn your head to <em>your</em> left, to your right, tilt your chin up, then down. Hold each pose until the oval turns green and fills; it is captured automatically and ticked off at the top.</p>',
         'tip'   => 'Good, even light on your face helps. Remove sunglasses and masks; regular glasses are fine.',
     ],
     [
@@ -68,7 +69,8 @@ $steps = [
     [
         'img'   => '07-mark-attendance.jpg',
         'title' => 'Every day after that: tap “Mark Attendance”',
-        'body'  => 'During the marking window shown on the page, open <strong>Attendance</strong> on the same phone while on the office WiFi and tap <strong>Mark Attendance</strong>. Follow the short pose prompts (centre, turn) and you’re marked present.',
+        'body'  => 'During the marking window shown on the page, open <strong>Attendance</strong> on the same phone while on the office WiFi and tap <strong>Mark Attendance</strong>. Follow the short pose prompts (centre, turn) and you’re marked present.'
+                 . '<p class="mt-3">With the newer guided check the steps come in a random order: look straight, turn your head to <em>your</em> left and to your right, blink once, and hold still for about three seconds while the screen changes colour. Each step completes on its own once you hold it — no buttons to press.</p>',
         'tip'   => 'The window and today’s status are always shown at the top of the Attendance page.',
     ],
 ];

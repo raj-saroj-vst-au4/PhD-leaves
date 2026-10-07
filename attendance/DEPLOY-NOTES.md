@@ -148,3 +148,42 @@ sudo mysql < /home/r4id/phd-attendance/ops/grants.local.sql   # creates attendan
 4. Enroll students in the office (Attendance → Today → *enroll code*; the student
    must be on the office WiFi).
 5. Run a shadow week to calibrate the face thresholds before stipends depend on it.
+
+## Liveness v2 — rollout (October 2026)
+
+Ships **off**: with `liveness_v2` = `0` and an empty pilot list every student
+gets exactly the current check, so the files can go out in any order (a new
+page against an old backend sees no `liveness`/`protocol` field and runs the
+original flow; an old page never receives a v2 challenge while the flag is
+off). What v2 is and how it is judged: RUNBOOK, "Liveness v2".
+
+1. **Migration** (optional — it only seeds the settings rows; the backend uses
+   the same defaults without it), with the account that applied the earlier
+   attendance migrations:
+   `mysql -u root -p phd_timeoff < database/migrations/2026_10_07_liveness_v2.sql`
+2. **Backend**: copy `attendance/backend/app/{faces,main,marking,config}.py`,
+   `attendance/backend/Dockerfile` and `attendance/backend/tests/` to
+   `/home/r4id/phd-attendance/backend/`, then rebuild **with the proxy build
+   args** exactly as in "Rebuilding the image on production" above. The build
+   now also downloads the anti-spoof model (1.7 MB from GitHub, SHA-256
+   pinned in the Dockerfile). Check it landed before restarting:
+   `docker run --rm phdtimeoff-attendance:latest sha256sum /models/antispoof/MiniFASNetV2.onnx`
+   → `b32929ad…3907`. If the build printed "anti-spoof model download or
+   checksum failed", v2 still works with that signal off (the backend logs
+   "anti-spoof model … not found"). Then `docker compose up -d` and
+   `curl -s 127.0.0.1:3070/api/healthz`.
+3. **Portal files** (into `/var/www/html/phdtimeoff/`):
+   `student/attendance.php`, `attendance-guide.php`,
+   `public/js/liveness.js`, `public/js/attendance.js`,
+   `public/js/attendance-admin.js`, `public/css/attendance.css`, and the
+   whole new directory `public/vendor/mediapipe/` (~26 MB: the bundle, two
+   WASM builds, the model). Asset URLs are mtime-busted. `tailwind.min.css` is
+   unchanged.
+4. *Optional*: if nginx's `mime.types` lacks `application/wasm wasm;`, add it
+   — saves phones a second 11 MB download on first use (works either way).
+5. **Pilot on one account**: find your `students.id` and set
+   `liveness_v2_students` to `[<id>]` (Configuration tab, or the SQL in the
+   RUNBOOK). Mark from your phone in the office; check the attempt's `detail`
+   (RUNBOOK, "Calibrate in the office"). Then `liveness_v2` = `1` for everyone.
+6. **Rollback**: `liveness_v2` = `0`, `liveness_v2_students` = `[]`. No files
+   need reverting; the original flow is still on the page.

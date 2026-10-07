@@ -106,8 +106,9 @@
     document.getElementById('atta-frames-title').textContent = title;
     body.innerHTML = '<div class="col-span-3 py-10 text-center text-sm text-gray-500"><i class="fas fa-circle-notch fa-spin mr-2 text-blue-500"></i>Loading…</div>';
     modal.classList.remove('hidden');
-    // Every stored frame: a marking burst is 2 per challenge step (up to 8),
-    // an enrollment capture up to 20. The endpoint 404s past the last one.
+    // Every stored frame: a marking burst is 2 per challenge step (up to 8;
+    // liveness v2 sends 15, seven of them under the colour flash), an
+    // enrollment capture up to 20. The endpoint 404s past the last one.
     // Shown as data: URLs, not blob: ones. Production's nginx sends
     // `Content-Security-Policy: default-src https: data: ...`, which has no
     // blob: — so <img src="blob:..."> was silently refused and every frame
@@ -402,7 +403,10 @@
           ${[['face_match_threshold', 'Auto-accept match ≥'], ['face_review_threshold', 'Send to review ≥'],
              ['liveness_threshold', 'Liveness ≥'], ['crossmatch_margin', 'Cross-match margin'],
              ['max_attempts_per_day', 'Max failed attempts/day'], ['frame_retention_days', 'Photo retention (days)'],
-             ['enrollment_min_frames', 'Min enrollment frames']].map(([k, label]) => `
+             ['enrollment_min_frames', 'Min enrollment frames'],
+             // Liveness v2 only — see the RUNBOOK before changing these.
+             ['flash_min_signal', 'Flash: min skin colour change'], ['flash_min_correlation', 'Flash: min correlation'],
+             ['antispoof_review_threshold', 'Anti-spoof: review at ≥']].map(([k, label]) => `
             <div class="flex items-center gap-2 py-2 text-sm">
               <span class="min-w-0 flex-1 text-gray-700">${label}</span>
               <input value="${esc(s[k] || '')}" data-set="${k}" class="form-input w-20 py-1.5 text-right tabular-nums">
@@ -421,6 +425,22 @@
           <div class="flex items-start gap-3 py-3 text-sm">
             <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Strict mode</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Also require the rotating code from the office screen. Stops remote marking via a friend's tethered phone.</p></div>
             <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="strict_mode" ${s.strict_mode === '1' ? 'checked' : ''}>
+          </div>
+          <div class="flex items-start gap-3 py-3 text-sm">
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Liveness v2 for everyone</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Named head turns, a blink and a colour flash instead of the original turn-either-way check. Off: only the pilot students below get it.</p></div>
+            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="liveness_v2" ${s.liveness_v2 === '1' ? 'checked' : ''}>
+          </div>
+          <div class="flex items-start gap-3 py-3 text-sm">
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Colour flash (liveness v2)</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Switch off if the room is so bright that most marks go to review as "flash_weak".</p></div>
+            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="flash_enabled" ${s.flash_enabled !== '0' ? 'checked' : ''}>
+          </div>
+          <div class="py-3 text-sm">
+            <p class="font-medium text-gray-900">Liveness v2 pilot students</p>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <input id="atta-lv2-students" value='${esc(s.liveness_v2_students || '[]')}' class="form-input min-w-[12rem] flex-1 py-2 font-mono text-xs">
+              <button id="atta-lv2-save" class="btn btn-primary btn-sm py-2">Save</button>
+            </div>
+            <p class="mt-1.5 text-xs text-gray-500">JSON list of student ids (students.id), e.g. [12, 40]</p>
           </div>
           <div class="py-3 text-sm">
             <p class="font-medium text-gray-900">Report recipients</p>
@@ -490,6 +510,10 @@
         await post('/admin/settings', { key: t.dataset.toggle, value: t.checked ? '1' : '0' });
       };
     });
+    panel.querySelector('#atta-lv2-save').onclick = async () => {
+      const r = await post('/admin/settings', { key: 'liveness_v2_students', value: panel.querySelector('#atta-lv2-students').value });
+      alert(r.data.ok ? 'Saved.' : (r.data.message || 'Failed'));
+    };
     panel.querySelector('#atta-recipients-save').onclick = async () => {
       const r = await post('/admin/settings', { key: 'report_recipients', value: panel.querySelector('#atta-recipients').value });
       alert(r.data.ok ? 'Saved.' : (r.data.message || 'Failed'));

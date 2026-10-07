@@ -296,25 +296,28 @@ def settle_failed(attempt_id: int) -> None:
 # Challenge issue (rate-limited)
 # ---------------------------------------------------------------------------
 #
-# There are only ten sequences, so an unlimited supply of challenges would let
-# a client re-roll until it drew one its stock photos happen to fit. Issue is
-# capped per minute and per day (a multiple of the attempt budget: tapping
-# Mark and then cancelling costs a challenge but not an attempt). A void by the
-# office resets the daily count along with the attempt budget.
+# There are only ten v1 sequences (24 in v2), so an unlimited supply of
+# challenges would let a client re-roll until it drew one its stock photos
+# happen to fit. Issue is capped per minute and per day (a multiple of the
+# attempt budget: tapping Mark and then cancelling costs a challenge but not an
+# attempt). A void by the office resets the daily count along with the attempt
+# budget.
 CHALLENGES_PER_MINUTE = 4
 CHALLENGES_PER_ATTEMPT = 3
 
 
-def issue_challenge(student_id: int, device_id: int, steps: list[str], day: date,
+def issue_challenge(student_id: int, device_id: int, steps: list[str] | str, day: date,
                     ttl_seconds: int, token_hash: str) -> None:
     """Store a challenge, refusing (and removing it again) past either cap.
     Insert-then-count, like reserve_attempt, so racing requests cannot
-    overshoot."""
+    overshoot. `steps` is a v1 step list or a stored spec string
+    (faces.Challenge.spec)."""
     per_day = max(10, CHALLENGES_PER_ATTEMPT * get_int_setting("max_attempts_per_day", 5))
+    spec = steps if isinstance(steps, str) else ",".join(steps)
     challenge_id = execute(
         "INSERT INTO att_challenges (token_hash, student_id, device_id, challenge, expires_at) "
         "VALUES (%s,%s,%s,%s,DATE_ADD(NOW(), INTERVAL %s SECOND))",
-        (token_hash, student_id, device_id, ",".join(steps), ttl_seconds),
+        (token_hash, student_id, device_id, spec, ttl_seconds),
     )
     # IST midnight of `day`, as the UTC instant this backend's session uses.
     midnight = (datetime.combine(day, datetime.min.time(), tzinfo=IST)
@@ -596,6 +599,8 @@ def purge_templates() -> dict:
 
 
 def thresholds() -> dict:
+    from .faces import DEFAULT_ANTISPOOF_REVIEW, DEFAULT_FLASH_MIN_CORRELATION, DEFAULT_FLASH_MIN_SIGNAL
+
     return {
         "match_threshold": get_float_setting("face_match_threshold", 0.42),
         "review_threshold": get_float_setting("face_review_threshold", 0.32),
@@ -603,7 +608,58 @@ def thresholds() -> dict:
         "crossmatch_margin": get_float_setting("crossmatch_margin", 0.05),
         # Not in the office UI; tune in att_settings if real bursts trip it.
         "consistency_threshold": get_float_setting("burst_consistency_threshold", 0.35),
+        # Liveness v2 only (a v1 challenge has no flash and runs no anti-spoof
+        # model, so these change nothing for it). See faces.check_flash and
+        # the RUNBOOK for tuning them from the measurements attempts record.
+        "flash_min_signal": get_float_setting("flash_min_signal", DEFAULT_FLASH_MIN_SIGNAL),
+        "flash_min_correlation": get_float_setting("flash_min_correlation", DEFAULT_FLASH_MIN_CORRELATION),
+        "antispoof_review_threshold": get_float_setting("antispoof_review_threshold", DEFAULT_ANTISPOOF_REVIEW),
     }
+
+
+# ---------------------------------------------------------------------------
+# Liveness protocol (feature flag)
+# ---------------------------------------------------------------------------
+#
+# Liveness v2 (named turns, blink, colour flash — faces.py) ships dark:
+#   liveness_v2 = '1'            -> every student gets v2
+#   liveness_v2_students = [ids] -> just these students.id (a pilot), while
+#                                   liveness_v2 stays '0' for everyone else
+# The protocol is fixed when a challenge is ISSUED and stored with it, so
+# flipping the flag never changes how an attempt already in flight is judged.
+
+def _pilot_students() -> set[int]:
+    raw = get_setting("liveness_v2_students", "[]")
+    try:
+        ids = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        logging.getLogger(__name__).warning("att_settings liveness_v2_students is not JSON: %r", raw)
+        return set()
+    if not isinstance(ids, list):
+        return set()
+    out = set()
+    for v in ids:
+        try:
+            out.add(int(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def liveness_protocol(student_id: int | None) -> int:
+    """1 (current) or 2 (liveness v2) for this student."""
+    if get_setting("liveness_v2", "0") == "1":
+        return 2
+    if student_id is not None and int(student_id) in _pilot_students():
+        return 2
+    return 1
+
+
+def flash_enabled() -> bool:
+    """The colour flash is part of v2 unless the office switches it off
+    (att_settings flash_enabled='0') — e.g. if the office light turns out too
+    bright for it and every attempt lands in review."""
+    return get_setting("flash_enabled", "1") != "0"
 
 
 def log_blocked(code: str, *, student_id: int | None, source_ip: str | None, day: date | None = None) -> None:

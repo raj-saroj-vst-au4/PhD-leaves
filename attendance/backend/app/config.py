@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     det_size: int = 640
     # A face smaller than this fraction of frame width is too far away to judge.
     min_face_ratio: float = 0.18
+    # Passive anti-spoof model for liveness v2 (review flag only). Baked into
+    # the image by the Dockerfile with a checksum; if it is missing the signal
+    # is simply off (faces.get_antispoof).
+    antispoof_model: str = "/models/antispoof/MiniFASNetV2.onnx"
     # Concurrent verifications per uvicorn worker (the Dockerfile runs 2). Each
     # one is already multi-threaded inside ONNX Runtime, so more slots mostly
     # add contention; the rest queue on the event loop without holding a thread.
