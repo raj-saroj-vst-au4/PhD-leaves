@@ -51,14 +51,14 @@ $steps = [
     [
         'img'   => null,
         'title' => 'Follow the camera guide',
-        'body'  => 'The camera opens full screen. Hold the phone at eye level, about an arm’s length away, with your whole face inside the circle.'
+        'body'  => 'The camera opens full screen with an oval. Hold the phone at eye level, about an arm’s length away, with your face inside the oval.'
                  . '<ol class="mt-3 list-decimal space-y-1.5 pl-5">'
-                 . '<li><strong>Look straight ahead</strong> to begin.</li>'
-                 . '<li><strong>Slowly move your head in a circle</strong> — left, up, right, down. Each part of the ring lights up as it is captured.</li>'
-                 . '<li>Keep going until the message reads <strong>6/6 captured</strong>; the app then shows “Building your face profile…”.</li>'
+                 . '<li><strong>Look straight ahead.</strong></li>'
+                 . '<li>Follow the arrow: <strong>turn your head to <em>your</em> left</strong>, then <strong>to your right</strong>.</li>'
+                 . '<li><strong>Tilt your chin up</strong>, then <strong>down</strong>.</li>'
                  . '</ol>'
-                 . '<p class="mt-3">On some phones the live guide is replaced by simple timed prompts — look straight, turn left, turn right, tilt up, tilt down, look straight again. Just follow each one.</p>'
-                 . '<p class="mt-3"><strong>Newer guided check</strong> (being introduced gradually — you may see this instead of the ring): an oval and an arrow. Look straight, then turn your head to <em>your</em> left, to your right, tilt your chin up, then down. Hold each pose until the oval turns green and fills; it is captured automatically and ticked off at the top.</p>',
+                 . '<p class="mt-3">Hold each pose until the oval turns green and fills — the photo is taken automatically and the step is ticked off at the top. The app then shows “Building your face profile…”.</p>'
+                 . '<p class="mt-3">On some phones the live guide is replaced by simple timed prompts. Just follow each one.</p>',
         'tip'   => 'Good, even light on your face helps. Remove sunglasses and masks; regular glasses are fine.',
     ],
     [
@@ -69,8 +69,12 @@ $steps = [
     [
         'img'   => '07-mark-attendance.jpg',
         'title' => 'Every day after that: tap “Mark Attendance”',
-        'body'  => 'During the marking window shown on the page, open <strong>Attendance</strong> on the same phone while on the office WiFi and tap <strong>Mark Attendance</strong>. Follow the short pose prompts (centre, turn) and you’re marked present.'
-                 . '<p class="mt-3">With the newer guided check there are three quick steps: look straight, then — in a random order — turn your head to <em>your</em> left or right (the arrow shows which) and blink slowly. Each step completes on its own once you hold it — no buttons to press.</p>',
+        'body'  => 'During the marking window shown on the page, open <strong>Attendance</strong> on the same phone while on the office WiFi and tap <strong>Mark Attendance</strong>. Then three quick steps:'
+                 . '<ol class="mt-3 list-decimal space-y-1.5 pl-5">'
+                 . '<li><strong>Look straight</strong> at the camera.</li>'
+                 . '<li>In a random order: <strong>turn your head</strong> to <em>your</em> left or right — the arrow shows which — and <strong>blink slowly</strong>.</li>'
+                 . '</ol>'
+                 . '<p class="mt-3">Each step completes on its own once you hold it — no buttons to press — and you’re marked present.</p>',
         'tip'   => 'The window and today’s status are always shown at the top of the Attendance page.',
     ],
 ];
@@ -92,7 +96,7 @@ $faq = [
     ],
     [
         'q' => 'Enrollment failed or the guide couldn’t find my face',
-        'a' => 'Move to better light, hold the phone steady at eye level, and keep your whole face inside the circle. Then ask the office for a new code and try again.',
+        'a' => 'Move to better light, hold the phone steady at eye level, and keep your whole face inside the oval. Then ask the office for a new code and try again.',
     ],
     [
         'q' => 'It says “This phone is not your enrolled device”',
@@ -203,31 +207,28 @@ $faq = [
                                     </div>
                                 </a>
                             <?php else: ?>
-                                <!-- Camera step: no screenshot, so an illustration of the ring guide -->
-                                <div class="mx-auto flex w-56 flex-col items-center rounded-[2rem] border-[6px] border-gray-900 bg-gray-900 px-4 pb-8 pt-10 shadow-xl sm:w-64" aria-hidden="true">
-                                    <p class="text-[10px] font-semibold uppercase tracking-wider text-blue-300">Live face check</p>
-                                    <p class="mt-1 text-center text-sm font-semibold text-white">Slowly move your head in a circle</p>
-                                    <svg viewBox="0 0 200 200" class="mt-6 w-40">
-                                        <?php
-                                        // Six ring segments; four lit to show progress.
-                                        for ($s = 0; $s < 6; $s++) {
-                                            $a0 = deg2rad($s * 60 - 90 + 4); $a1 = deg2rad(($s + 1) * 60 - 90 - 4);
-                                            $r = 88;
-                                            $x0 = 100 + $r * cos($a0); $y0 = 100 + $r * sin($a0);
-                                            $x1 = 100 + $r * cos($a1); $y1 = 100 + $r * sin($a1);
-                                            $lit = $s < 4;
-                                            printf('<path d="M%.1f %.1f A%d %d 0 0 1 %.1f %.1f" fill="none" stroke="%s" stroke-width="10" stroke-linecap="round"/>',
-                                                $x0, $y0, $r, $r, $x1, $y1, $lit ? '#34d399' : '#475569');
-                                        }
-                                        ?>
-                                        <circle cx="100" cy="100" r="70" fill="#1e293b"/>
-                                        <!-- simple face -->
-                                        <ellipse cx="100" cy="102" rx="34" ry="42" fill="#cbd5e1"/>
-                                        <circle cx="88" cy="96" r="4" fill="#334155"/>
-                                        <circle cx="112" cy="96" r="4" fill="#334155"/>
-                                        <path d="M88 120 Q100 128 112 120" stroke="#334155" stroke-width="3" fill="none" stroke-linecap="round"/>
+                                <!-- Camera step: no screenshot, so an illustration of the guided check -->
+                                <div class="mx-auto flex w-56 flex-col items-center rounded-[2rem] border-[6px] border-gray-900 bg-gray-900 px-4 pb-8 pt-8 shadow-xl sm:w-64" aria-hidden="true">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white"><i class="fas fa-check"></i></span>
+                                        <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[10px] text-gray-900"><i class="fas fa-arrow-left"></i></span>
+                                        <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-[10px] text-gray-400"><i class="fas fa-eye"></i></span>
+                                    </div>
+                                    <p class="mt-3 text-center text-sm font-semibold text-white">Turn your head to your LEFT</p>
+                                    <svg viewBox="0 0 200 220" class="mt-4 w-40">
+                                        <rect x="8" y="6" width="184" height="208" rx="26" fill="#1e293b"/>
+                                        <!-- arrow cue -->
+                                        <path d="M40 110 l14 -12 M40 110 l14 12" stroke="#94a3b8" stroke-width="5" fill="none" stroke-linecap="round"/>
+                                        <!-- face, turned to the viewer's left like the mirrored preview -->
+                                        <ellipse cx="104" cy="112" rx="34" ry="44" fill="#cbd5e1"/>
+                                        <circle cx="91" cy="104" r="4" fill="#334155"/>
+                                        <circle cx="111" cy="104" r="4" fill="#334155"/>
+                                        <path d="M93 128 Q101 134 110 128" stroke="#334155" stroke-width="3" fill="none" stroke-linecap="round"/>
+                                        <!-- oval guide, green and filling while held -->
+                                        <ellipse cx="104" cy="112" rx="56" ry="72" fill="none" stroke="#334155" stroke-width="6"/>
+                                        <ellipse cx="104" cy="112" rx="56" ry="72" fill="none" stroke="#34d399" stroke-width="6" stroke-linecap="round" stroke-dasharray="300 500" transform="rotate(-90 104 112)"/>
                                     </svg>
-                                    <p class="mt-6 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-emerald-300">Keep going — 4/6 captured</p>
+                                    <p class="mt-4 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-emerald-300">Hold it there…</p>
                                 </div>
                             <?php endif; ?>
                         </div>
