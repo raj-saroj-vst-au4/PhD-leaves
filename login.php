@@ -10,10 +10,13 @@ require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/rate_limit.php';
 require_once __DIR__ . '/includes/captcha.php';
 require_once __DIR__ . '/classes/User.php';
+require_once __DIR__ . '/includes/attendance_today.php';
 
-// If already logged in, redirect to dashboard
+// If already logged in, redirect to dashboard (students: Attendance first while it is due)
 if (isLoggedIn()) {
-    header('Location: ' . getRoleHomePage(getCurrentUserRole()));
+    header('Location: ' . (getCurrentUserRole() === 'student'
+        ? studentLandingPage(getCurrentStudentId())
+        : getRoleHomePage(getCurrentUserRole())));
     exit();
 }
 
@@ -69,8 +72,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Create session
                 loginUser($userData, $studentId);
 
-                // Redirect to appropriate dashboard
-                header('Location: ' . getRoleHomePage($userData['role']));
+                // Redirect to the role's home. A student whose attendance is due
+                // today lands on the Attendance page: marking comes first.
+                header('Location: ' . ($userData['role'] === 'student'
+                    ? studentLandingPage($studentId)
+                    : getRoleHomePage($userData['role'])));
                 exit();
             } else {
                 // The reserved attempt stays on record as this failure.
@@ -298,16 +304,25 @@ $pageTitle = 'Login';
                     <p class="text-sm text-gray-600">
                         New user? Check your email for an invitation link.
                     </p>
-                    <p class="mt-1.5 text-sm">
-                        <a href="<?php echo BASE_URL; ?>/attendance-guide.php" class="inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-700">
-                            <i class="fas fa-user-check text-xs"></i> How to register your face for attendance
-                        </a>
-                    </p>
                     <p class="mt-1.5 text-xs text-gray-500">
                         Need help? Contact <a href="mailto:<?php echo ADMIN_EMAIL; ?>" class="font-medium text-blue-600 hover:text-blue-700"><?php echo ADMIN_EMAIL; ?></a>
                     </p>
                 </div>
             </div>
+
+            <!-- Face attendance how-to, highlighted: every student needs it once -->
+            <a href="<?php echo BASE_URL; ?>/attendance-guide.php"
+               class="group mt-4 flex items-center gap-4 rounded-2xl bg-gradient-to-r from-amber-400 to-orange-500 p-4 text-white shadow-lg ring-1 ring-inset ring-white/20 transition hover:-translate-y-0.5 hover:shadow-xl sm:p-5">
+                <span class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/20 text-lg ring-1 ring-inset ring-white/30">
+                    <i class="fas fa-user-check"></i>
+                </span>
+                <span class="flex-1">
+                    <span class="block text-xs font-semibold uppercase tracking-wider text-amber-50">New &middot; Face attendance</span>
+                    <span class="mt-0.5 block font-semibold">How to register your face for attendance</span>
+                    <span class="mt-0.5 block text-sm text-amber-50">Step-by-step guide with screenshots</span>
+                </span>
+                <i class="fas fa-arrow-right transition group-hover:translate-x-1"></i>
+            </a>
 
             <!-- Footer (the brand panel carries it on large screens) -->
             <p class="mt-8 text-center text-sm text-blue-100 lg:hidden">&copy; <?php echo date('Y'); ?> IIT Bombay. All rights reserved.</p>

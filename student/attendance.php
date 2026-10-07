@@ -139,8 +139,9 @@ $enrollCode = isset($_GET['enroll'])
                 steps. Enrollment only works on the office WiFi, so no one can enroll your face remotely.
             </p>
             <a href="<?php echo BASE_URL; ?>/attendance-guide.php" target="_blank" rel="noopener"
-               class="inline-flex items-center gap-2 text-sm font-semibold text-blue-700 hover:text-blue-800">
-                <i class="fas fa-book-open"></i> Step-by-step guide with screenshots
+               class="flex items-center gap-3 rounded-xl bg-amber-50 p-3.5 text-sm font-semibold text-amber-900 ring-1 ring-inset ring-amber-200 transition hover:bg-amber-100">
+                <span class="icon-chip-sm chip-amber"><i class="fas fa-book-open"></i></span>
+                <span class="flex-1">First time? Read the step-by-step guide with screenshots</span>
                 <i class="fas fa-arrow-right text-xs"></i>
             </a>
             <div class="flex items-start gap-3 rounded-xl bg-gray-50 p-3.5 text-xs leading-relaxed text-gray-600 ring-1 ring-inset ring-gray-100">

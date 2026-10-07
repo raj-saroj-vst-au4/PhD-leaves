@@ -14,6 +14,7 @@ requireRole('student');
 require_once __DIR__ . '/../classes/User.php';
 require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../classes/Holiday.php';
+require_once __DIR__ . '/../includes/attendance_today.php';
 
 $userClass = new User();
 $leaveClass = new Leave();
@@ -137,6 +138,68 @@ $coordinators = [
         </a>
     </div>
 </div>
+
+<?php
+// Today's attendance comes first: it is the one thing with a daily deadline.
+$attToday = attendanceToday($studentDetails['student_id'] ?? getCurrentStudentId());
+$attUrl = BASE_URL . '/student/attendance.php';
+$guideUrl = BASE_URL . '/attendance-guide.php';
+?>
+<?php if ($attToday !== null && !$attToday['enrolled']): ?>
+    <!-- Not registered for face attendance yet -->
+    <div class="mb-8 overflow-hidden rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-lg">
+        <div class="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:p-6">
+            <span class="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/20 text-xl ring-1 ring-inset ring-white/30">
+                <i class="fas fa-id-badge"></i>
+            </span>
+            <div class="flex-1">
+                <p class="text-xs font-semibold uppercase tracking-wider text-amber-100">Action needed · Attendance</p>
+                <p class="mt-1 text-lg font-semibold">Register your face for attendance</p>
+                <p class="mt-1 text-sm text-amber-50">
+                    A one-time, five-minute step at the SOM office, on your own phone and the office WiFi.
+                    Until you do, you can't mark attendance.
+                </p>
+            </div>
+            <div class="flex flex-col gap-2 sm:items-end">
+                <a href="<?php echo $guideUrl; ?>" class="btn bg-white text-orange-700 shadow-sm hover:bg-amber-50">
+                    <i class="fas fa-book-open"></i> How to register
+                </a>
+                <a href="<?php echo $attUrl; ?>" class="text-sm font-medium text-white/90 underline-offset-2 hover:underline">
+                    Go to Attendance <i class="fas fa-arrow-right text-xs"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+<?php elseif ($attToday !== null && $attToday['due']): ?>
+    <!-- Attendance due today -->
+    <a href="<?php echo $attUrl; ?>" class="group mb-8 block overflow-hidden rounded-2xl bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-lg transition hover:shadow-xl">
+        <div class="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:p-6">
+            <span class="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/20 text-xl ring-1 ring-inset ring-white/30">
+                <i class="fas fa-camera"></i>
+            </span>
+            <div class="flex-1">
+                <p class="text-xs font-semibold uppercase tracking-wider text-blue-100">Today &middot; <?php echo date('j M'); ?></p>
+                <p class="mt-1 text-lg font-semibold">You haven't marked your attendance yet</p>
+                <p class="mt-1 text-sm text-blue-50">
+                    <?php if ($attToday['open_now']): ?>
+                        Marking is open until <?php echo $attToday['end']; ?> &mdash; on the SOM office WiFi, from your enrolled phone.
+                    <?php else: ?>
+                        Marking opens at <?php echo $attToday['start']; ?> and closes at <?php echo $attToday['end']; ?>.
+                    <?php endif; ?>
+                </p>
+            </div>
+            <span class="btn bg-white text-blue-700 shadow-sm group-hover:bg-blue-50">
+                <i class="fas fa-user-check"></i> Mark attendance
+            </span>
+        </div>
+    </a>
+<?php elseif ($attToday !== null && $attToday['marked']): ?>
+    <div class="alert alert-success mb-8" role="status">
+        <i class="fas fa-check-circle mt-0.5"></i>
+        <p class="flex-1">Attendance marked for today<?php echo $attToday['marked_at'] ? ' at ' . sanitize($attToday['marked_at']) : ''; ?>.</p>
+        <a href="<?php echo $attUrl; ?>" class="text-sm font-semibold hover:underline">View</a>
+    </div>
+<?php endif; ?>
 
 <!-- Missing Guide/TA Warning -->
 <?php if (!$hasRequiredAssignments): ?>
