@@ -164,7 +164,12 @@ $pageTitle = 'Forgot Password';
                             autofocus
                         >
                     </div>
-                    <p class="form-help">Use your @iitb.ac.in email address.</p>
+                    <p class="form-help">
+                        Enter the exact address your portal invitation was sent to &mdash; the one you
+                        sign in with. For many students this is the roll-number address
+                        (e.g. <span class="font-mono">25d1503@iitb.ac.in</span>), not a name-based one.
+                        A link is only sent if that address has an account.
+                    </p>
                 </div>
 
                 <!-- Submit Button -->
