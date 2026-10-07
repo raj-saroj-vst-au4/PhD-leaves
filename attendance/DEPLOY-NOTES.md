@@ -187,3 +187,44 @@ off). What v2 is and how it is judged: RUNBOOK, "Liveness v2".
    (RUNBOOK, "Calibrate in the office"). Then `liveness_v2` = `1` for everyone.
 6. **Rollback**: `liveness_v2` = `0`, `liveness_v2_students` = `[]`. No files
    need reverting; the original flow is still on the page.
+
+### Liveness v2 — revision after the pilot (shorter check, MediaPipe blink)
+
+v2 marking is now centre + ONE random named turn + a blink (6 frames); the
+colour flash is off by default; the blink is judged on the server with
+MediaPipe; a soft liveness doubt no longer goes to review when the match is
+≥ `review_skip_match` (0.65). RUNBOOK, "Liveness v2", has the details.
+
+1. **Settings on production** (the earlier copy of the migration seeded
+   `flash_enabled='1'`; re-running the new copy adds the new keys but never
+   overwrites):
+   ```bash
+   mysql -u root -p phd_timeoff < database/migrations/2026_10_07_liveness_v2.sql
+   mysql -u root -p phd_timeoff -e "UPDATE att_settings SET svalue='0' WHERE skey='flash_enabled';"
+   mysql -u root -p phd_timeoff -e "SELECT skey, svalue FROM att_settings WHERE skey IN ('flash_enabled','review_skip_match','blink_closed_min','blink_open_max','blink_min_diff','liveness_v2','liveness_v2_students');"
+   ```
+   expect `flash_enabled 0`, `review_skip_match 0.65`, `blink_closed_min 0.45`,
+   `blink_open_max 0.40`, `blink_min_diff 0.25`. (Without the rows the backend
+   uses the same values — except `flash_enabled`, whose existing '1' must go.)
+2. **Backend**: copy `attendance/backend/app/{faces,main,marking,config}.py`,
+   `attendance/backend/{Dockerfile,requirements.txt}` and `tests/` to
+   `/home/r4id/phd-attendance/backend/`, then rebuild **with the proxy build
+   args** as in "Rebuilding the image on production". New in the build: two
+   small apt packages (libglvnd0, libgles2) plus libegl1 installed without its
+   Mesa dependency, `pip install --no-deps mediapipe==0.10.35` (12 MB wheel),
+   absl-py and flatbuffers, and `face_landmarker.task` (3.7 MB, SHA-256
+   pinned). The image grows by ~50 MB. Check before restarting:
+   ```bash
+   docker run --rm phdtimeoff-attendance:latest sha256sum /models/mediapipe/face_landmarker.task  # 64184e22…c9ff
+   docker run --rm phdtimeoff-attendance:latest python -c "from app import faces; print(faces.get_blink_model() is not None)"   # True
+   ```
+   then `docker compose up -d` and `curl -s 127.0.0.1:3070/api/healthz`. If the
+   check prints False, the blink falls back to the landmark measures (more
+   marks pass via `review_skip_match` or go to review) — fix the build.
+3. **Portal files**: `public/js/liveness.js`, `public/js/attendance.js`,
+   `public/js/attendance-admin.js`, `attendance-guide.php`. (`student/
+   attendance.php`, the CSS and `public/vendor/mediapipe/` are unchanged since
+   the first v2 deploy.)
+4. The pilot list (`[87]`) needs no change. A challenge issued by the old
+   backend and submitted after the restart is refused as expired; the student
+   just taps Mark again.

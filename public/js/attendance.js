@@ -350,6 +350,7 @@
   // ----------------------------------------------------------------- status
 
   let net = null;
+  let trackerWarm = false;
 
   function pill(color, icon, text) {
     return `<span class="inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium ring-1 ring-inset bg-${color}-50 text-${color}-700 ring-${color}-200">
@@ -394,6 +395,14 @@
       !(net.today && net.today.kind !== 'void') && !net.pending_review;
 
     markBtn.classList.toggle('hidden', !canMark);
+    // Liveness v2: fetch and start the face tracker now, while the student is
+    // still reading the page, so tapping Mark goes straight to the camera
+    // (the first load is ~15 MB and a second or two of start-up, then cached).
+    // Only when marking is actually possible — i.e. on the office WiFi.
+    if (canMark && net.liveness === 2 && !trackerWarm) {
+      trackerWarm = true;
+      setTimeout(() => { loadLiveness(); }, 400);
+    }
     markHint.textContent = !net.enabled ? 'Attendance is temporarily disabled by the office.'
       : (net.today && net.today.kind !== 'void') ? ''
       : net.pending_review ? ''

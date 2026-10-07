@@ -70,7 +70,7 @@ $steps = [
         'img'   => '07-mark-attendance.jpg',
         'title' => 'Every day after that: tap “Mark Attendance”',
         'body'  => 'During the marking window shown on the page, open <strong>Attendance</strong> on the same phone while on the office WiFi and tap <strong>Mark Attendance</strong>. Follow the short pose prompts (centre, turn) and you’re marked present.'
-                 . '<p class="mt-3">With the newer guided check the steps come in a random order: look straight, turn your head to <em>your</em> left and to your right, blink once, and hold still for about three seconds while the screen changes colour. Each step completes on its own once you hold it — no buttons to press.</p>',
+                 . '<p class="mt-3">With the newer guided check there are three quick steps: look straight, then — in a random order — turn your head to <em>your</em> left or right (the arrow shows which) and blink slowly. Each step completes on its own once you hold it — no buttons to press.</p>',
         'tip'   => 'The window and today’s status are always shown at the top of the Attendance page.',
     ],
 ];

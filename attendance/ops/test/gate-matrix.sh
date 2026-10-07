@@ -76,10 +76,10 @@ cat <<'EOF'
   - mirrored photo:      turned photo + its horizontal flip   -> 422 MIRRORED_FRAMES
   liveness v2 (student on the flag or the pilot list):
   - wrong named side:    turn RIGHT when asked LEFT           -> 422 POSE_CHALLENGE_FAILED
-  - no blink:            keep eyes open at the blink step     -> 422 BLINK_CHALLENGE_FAILED (or review if unclear)
-  - recorded video:      play a clip of the student           -> 422 FLASH_CHALLENGE_FAILED or review (flash_weak)
-  - very bright spot:    mark in direct sunlight              -> pending LIVENESS_REVIEW, detail.review_reasons
-  - photo of a photo:    MiniFASNet spoof >= threshold        -> pending LIVENESS_REVIEW (never an outright fail)
+  - no blink:            keep eyes open at the blink step     -> 422 BLINK_CHALLENGE_FAILED
+  - unclear blink:       half-close the eyes                  -> pass if match >= review_skip_match (detail.review_skipped), else pending LIVENESS_REVIEW
+  - flipped photo:       photo turned the other way, flipped  -> 422 MIRRORED_FRAMES (detail.flipped_turn)
+  - photo of a photo:    MiniFASNet spoof >= threshold        -> soft doubt: review below review_skip_match, never an outright fail
   - scan-bomb JPEG:      progressive frame with >16 scans     -> 400 BAD_FRAME
   - strict mode:         enable, type stale/wrong code        -> 403 STRICT_CODE_INVALID
   - hard delete:         admin deletes a student with records -> refused (FK 1451), nothing removed

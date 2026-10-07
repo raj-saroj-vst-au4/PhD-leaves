@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # the image by the Dockerfile with a checksum; if it is missing the signal
     # is simply off (faces.get_antispoof).
     antispoof_model: str = "/models/antispoof/MiniFASNetV2.onnx"
+    # MediaPipe Face Landmarker, for judging the liveness v2 blink with the
+    # same model the phone used (faces.get_blink_model). Same file as
+    # public/vendor/mediapipe/face_landmarker.task; the Dockerfile fetches it
+    # with a checksum. Missing -> the blink falls back to landmark measures.
+    blink_model: str = "/models/mediapipe/face_landmarker.task"
     # Concurrent verifications per uvicorn worker (the Dockerfile runs 2). Each
     # one is already multi-threaded inside ONNX Runtime, so more slots mostly
     # add contention; the rest queue on the event loop without holding a thread.

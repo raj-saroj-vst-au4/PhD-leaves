@@ -146,10 +146,37 @@ TURN_RATIO_MIN = 0.11
 CENTRE_RATIO_MAX = 0.085
 
 # --- blink ---
-# A blink step uploads two frames: eyes closed (the phone takes it at the peak
-# of the blink) and eyes open just after. Two measures of the closed frame are
-# compared with the student's OWN open eyes in this burst — relative, because
-# open eyes differ a lot between people, and with glasses, squints and smiles:
+# A blink step uploads two frames: eyes closed (the phone keeps the very frame
+# its tracker judged shut, at the peak of the blink) and eyes open just after.
+#
+# The server judges them with the SAME model the phone used: MediaPipe's Face
+# Landmarker (face_landmarker.task, IMAGE mode, CPU), whose eyeBlinkLeft /
+# eyeBlinkRight blendshapes are 0 for a wide-open eye and approach 1 shut. On
+# the frames the browser harness uploaded, the server's scores matched the
+# phone's to within 0.03 (shut 0.64/0.52, open 0.21/0.10); looking down at a
+# phone can lift an open eye to ~0.4, squinting to ~0.6. So, on the mean of
+# both eyes (att_settings in brackets):
+#   seen      closed >= 0.45 (blink_closed_min), open <= 0.40 (blink_open_max)
+#             and closed - open >= 0.25 (blink_min_diff)
+#   not seen  closed < 0.30 and within 0.10 of open: the "shut" frame is as
+#             open as the open one — a hard BLINK_CHALLENGE_FAILED. The phone
+#             only ever sends, as the shut one, the exact frame its tracker
+#             scored >= 0.50 (and 0.30 above the student's open eyes), so a
+#             real blink cannot land here through capture timing.
+#   unclear   anything else (office review, unless the identity match clears
+#             review_skip_match — see judge_burst)
+# Production attempt #41 (pilot) is why: its "shut" frame was not shut, and the
+# old measures below could not say so either way.
+DEFAULT_BLINK_CLOSED_MIN = 0.45
+DEFAULT_BLINK_OPEN_MAX = 0.40
+DEFAULT_BLINK_MIN_DIFF = 0.25
+BLINK_NOT_SEEN_MAX = 0.30
+BLINK_NOT_SEEN_DIFF = 0.10
+
+# Fallback when the mediapipe package or its model is missing: two measures of
+# the closed frame compared with the student's OWN open eyes in this burst —
+# relative, because open eyes differ a lot between people, and with glasses,
+# squints and smiles:
 #   ear  — eye aspect ratio from the 68 landmarks (lid height / eye width).
 #   dark — the fraction of the eye box darker than the cheek below it: the
 #          iris and pupil when open, only the lash line when shut.
@@ -167,7 +194,12 @@ BLINK_DARK_CHANGE = 0.60         #       dark fraction <= 60% of open, or >= 1/0
 BLINK_EAR_OPEN = 0.92            # not seen: EAR >= 92% of open AND dark within
 BLINK_DARK_SAME = 0.85           #           85%..1/0.85 of open
 
-# --- colour flash (screen illumination) ---
+# --- colour flash (screen illumination) — OFF by default ---
+# Taken out of the marking sequence after the pilot (it added ~3 s, and the
+# office light left it "too weak to judge": attempt #41 had correlation 0.90
+# but signal 0.0077). It stays here, dormant, behind att_settings
+# flash_enabled='1' — which adds it back as one more randomly placed step.
+#
 # A looping or live-relayed video of the student can perform turns and blinks
 # on cue. It cannot make the student's face reflect colours the phone's screen
 # shows at random a moment ago. During the flash step the phone fills the
@@ -198,20 +230,34 @@ DEFAULT_FLASH_MIN_SIGNAL = 0.008       # below this: too weak to judge -> review
 DEFAULT_FLASH_MIN_CORRELATION = 0.75   # pass needs at least this correlation
 DEFAULT_ANTISPOOF_REVIEW = 0.90        # MiniFASNet spoof probability -> office review
 
+# An attempt held back ONLY for a soft liveness reason (blink unclear, flash
+# too weak, the anti-spoof model's suspicion) whose identity match is at least
+# this goes through instead of to review. 0.65 is far above the 0.42 match
+# threshold — two different people essentially never score it — and the hard
+# checks (named side, a definite no-blink, cross-match, mixed faces, replay,
+# timing) have all passed by then. Pilot attempt #41 matched at 0.89.
+DEFAULT_REVIEW_SKIP_MATCH = 0.65
+SOFT_REVIEW_REASONS = ("blink_unclear", "flash_weak", "flash_incomplete", "antispoof")
+
 LIVENESS_V1, LIVENESS_V2 = 1, 2
 V2_PREFIX = "v2:"
 V2_STEPS = (POSE_CENTRE, POSE_LEFT, POSE_RIGHT, POSE_BLINK, POSE_FLASH)
-# What a v2 challenge can be: always 'centre' first (an easy start, and the
-# open-eye/identity anchor), then left, right, blink and the colour flash in a
-# random order — every burst shows BOTH sides, a blink and the flash. 24
-# sequences, about 8-9 s for a person. With the flash switched off
-# (att_settings flash_enabled=0): the 6 orders of left, right and blink.
+# What a v2 challenge can be: 'centre' first (an easy start, and the
+# identity/open-eye anchor), then ONE named turn — left or right, drawn at
+# random — and a blink, in a random order: 4 sequences, 6 frames, a few
+# seconds for a person. The pilot asked for exactly this ("randomly ask the
+# user to blink and turn to a specific direction once"); the first version
+# also asked for the other side and a colour flash and took too long.
+# With flash_enabled='1' the flash joins as a third randomly placed step (12).
 SEQUENCES_V2: tuple[tuple[str, ...], ...] = tuple(
     (POSE_CENTRE,) + rest
-    for rest in itertools.permutations((POSE_LEFT, POSE_RIGHT, POSE_BLINK, POSE_FLASH))
+    for side in (POSE_LEFT, POSE_RIGHT)
+    for rest in itertools.permutations((side, POSE_BLINK))
 )
-SEQUENCES_V2_NO_FLASH: tuple[tuple[str, ...], ...] = tuple(
-    (POSE_CENTRE,) + rest for rest in itertools.permutations((POSE_LEFT, POSE_RIGHT, POSE_BLINK))
+SEQUENCES_V2_FLASH: tuple[tuple[str, ...], ...] = tuple(
+    (POSE_CENTRE,) + rest
+    for side in (POSE_LEFT, POSE_RIGHT)
+    for rest in itertools.permutations((side, POSE_BLINK, POSE_FLASH))
 )
 
 _rng = secrets.SystemRandom()
@@ -401,13 +447,14 @@ def new_flash(rng=None) -> tuple[tuple[str, ...], tuple[int, ...]]:
     return tuple(colors), ms
 
 
-def new_challenge_v2(rng=None, *, flash: bool = True) -> Challenge:
-    """A v2 challenge, e.g. centre → blink → flash → left → right, the order
-    drawn uniformly with a CSPRNG and the flash colours with it. The same
+def new_challenge_v2(rng=None, *, flash: bool = False) -> Challenge:
+    """A v2 challenge, e.g. centre → blink → right, drawn uniformly with a
+    CSPRNG (so the side and the order are each a coin toss). The same
     single-use token, timing floor and issue caps as v1 apply
-    (main.mark_challenge, marking.issue_challenge)."""
+    (main.mark_challenge, marking.issue_challenge). `flash` (att_settings
+    flash_enabled) adds the dormant colour flash as a third step."""
     rng = rng or _rng
-    steps = tuple(rng.choice(SEQUENCES_V2 if flash else SEQUENCES_V2_NO_FLASH))
+    steps = tuple(rng.choice(SEQUENCES_V2_FLASH if flash else SEQUENCES_V2))
     colors, ms = new_flash(rng) if flash else ((), ())
     return Challenge(LIVENESS_V2, steps, colors, ms)
 
@@ -421,7 +468,7 @@ def parse_challenge_spec(spec: str) -> Challenge | None:
         return Challenge(LIVENESS_V1, tuple(steps)) if steps else None
     parts = spec[len(V2_PREFIX):].split("|")
     steps = tuple(s for s in parts[0].split(",") if s)
-    if steps not in SEQUENCES_V2 and steps not in SEQUENCES_V2_NO_FLASH:
+    if steps not in SEQUENCES_V2 and steps not in SEQUENCES_V2_FLASH:
         return None
     if POSE_FLASH not in steps:
         return Challenge(LIVENESS_V2, steps) if len(parts) == 1 else None
@@ -1047,6 +1094,83 @@ def check_blink(closed: FrameAnalysis, opened: FrameAnalysis,
     return "unclear", evidence
 
 
+# --- the blink, judged by MediaPipe (see "blink" at the top) ---------------
+
+_blink_lock = threading.Lock()
+_blink_model = None
+_blink_loaded = False
+
+
+def get_blink_model():
+    """MediaPipe's Face Landmarker (IMAGE mode, CPU, blendshapes on), or None
+    when the package or its model is missing — then the blink falls back to
+    check_blink's measures. Loaded once per process (~1 s, ~50 MB)."""
+    global _blink_model, _blink_loaded
+    if not _blink_loaded:
+        with _blink_lock:
+            if not _blink_loaded:
+                path = get_settings().blink_model
+                try:
+                    if not path or not os.path.isfile(path):
+                        raise FileNotFoundError(path)
+                    from mediapipe.tasks.python import BaseOptions
+                    from mediapipe.tasks.python import vision as mp_vision
+                    options = mp_vision.FaceLandmarkerOptions(
+                        base_options=BaseOptions(model_asset_path=path, delegate=BaseOptions.Delegate.CPU),
+                        running_mode=mp_vision.RunningMode.IMAGE,
+                        num_faces=1,
+                        output_face_blendshapes=True,
+                    )
+                    _blink_model = mp_vision.FaceLandmarker.create_from_options(options)
+                    log.info("blink model %s ready", path)
+                except Exception:
+                    log.exception("MediaPipe blink model unavailable (%s); using the landmark fallback", path)
+                    _blink_model = None
+                _blink_loaded = True
+    return _blink_model
+
+
+def blink_scores(img: np.ndarray | None) -> tuple[float, float] | None:
+    """(eyeBlinkLeft, eyeBlinkRight) for the face in a BGR frame, or None.
+    Thread-safe: MediaPipe graphs take one image at a time."""
+    model = get_blink_model()
+    if model is None or img is None:
+        return None
+    import mediapipe as mp
+
+    rgb = np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    with _blink_lock:
+        res = model.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+    if not res.face_blendshapes:
+        return None
+    cats = {c.category_name: float(c.score) for c in res.face_blendshapes[0]}
+    if "eyeBlinkLeft" not in cats or "eyeBlinkRight" not in cats:
+        return None
+    return cats["eyeBlinkLeft"], cats["eyeBlinkRight"]
+
+
+def check_blink_mp(closed: tuple[float, float] | None, opened: tuple[float, float] | None, *,
+                   closed_min: float = DEFAULT_BLINK_CLOSED_MIN,
+                   open_max: float = DEFAULT_BLINK_OPEN_MAX,
+                   min_diff: float = DEFAULT_BLINK_MIN_DIFF) -> tuple[str, dict]:
+    """The blink from MediaPipe's blendshape scores of the two blink frames
+    (see "blink" at the top for the rule and where the numbers come from)."""
+    evidence = {
+        "method": "mediapipe",
+        "closed": None if closed is None else [round(v, 3) for v in closed],
+        "opened": None if opened is None else [round(v, 3) for v in opened],
+        "closed_min": closed_min, "open_max": open_max, "min_diff": min_diff,
+    }
+    if closed is None or opened is None:
+        return "unclear", evidence
+    c, o = float(np.mean(closed)), float(np.mean(opened))
+    if c >= closed_min and o <= open_max and c - o >= min_diff:
+        return "seen", evidence
+    if c < BLINK_NOT_SEEN_MAX and c - o < BLINK_NOT_SEEN_DIFF:
+        return "not_seen", evidence
+    return "unclear", evidence
+
+
 def _srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
     c = np.asarray(rgb, dtype=np.float64) / 255.0
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
@@ -1122,13 +1246,21 @@ class LivenessV2:
 
 def check_challenge_v2(analyses: Sequence[FrameAnalysis], challenge: Challenge, *,
                        flash_min_signal: float = DEFAULT_FLASH_MIN_SIGNAL,
-                       flash_min_correlation: float = DEFAULT_FLASH_MIN_CORRELATION) -> LivenessV2:
+                       flash_min_correlation: float = DEFAULT_FLASH_MIN_CORRELATION,
+                       blink: dict | None = None,
+                       blink_closed_min: float = DEFAULT_BLINK_CLOSED_MIN,
+                       blink_open_max: float = DEFAULT_BLINK_OPEN_MAX,
+                       blink_min_diff: float = DEFAULT_BLINK_MIN_DIFF) -> LivenessV2:
     """Judge a v2 burst step by step, each step in its own frames.
 
     Pose steps (centre/left/right): like v1, the step's usable frames must
     show exactly one definite pose and it must be the one asked for — but the
     pose is FrameAnalysis.side, the geometric turn in the student's own terms,
-    so 'left' means the student's left whatever either model's conventions."""
+    so 'left' means the student's left whatever either model's conventions.
+
+    `blink` is {"closed": scores, "opened": scores} from MediaPipe
+    (verify_burst); None means the model is unavailable and check_blink's
+    landmark measures decide instead."""
     counts = challenge.frame_counts()
     result = LivenessV2(True, "absent", "absent", [], set(), set())
     if len(analyses) != sum(counts):
@@ -1162,8 +1294,14 @@ def check_challenge_v2(analyses: Sequence[FrameAnalysis], challenge: Challenge, 
             # The blink is asked for looking at the camera; a turned head is
             # not a blink step performed (and turned eyes measure badly).
             turned = any(f.ok and f.side in (POSE_LEFT, POSE_RIGHT) for f in group)
-            result.blink, record["blink"] = ("not_seen", {"turned": True}) if turned \
-                else check_blink(closed, opened, open_refs)
+            if turned:
+                result.blink, record["blink"] = "not_seen", {"turned": True}
+            elif blink is not None:
+                result.blink, record["blink"] = check_blink_mp(
+                    blink.get("closed"), blink.get("opened"), closed_min=blink_closed_min,
+                    open_max=blink_open_max, min_diff=blink_min_diff)
+            else:
+                result.blink, record["blink"] = check_blink(closed, opened, open_refs)
             record["ok"] = result.blink == "seen"
         else:
             definite = {f.side for f in group if f.ok and f.side in (POSE_CENTRE, POSE_LEFT, POSE_RIGHT)}
@@ -1192,16 +1330,25 @@ def judge_burst(
     flash_min_correlation: float = DEFAULT_FLASH_MIN_CORRELATION,
     antispoof_review_threshold: float = DEFAULT_ANTISPOOF_REVIEW,
     antispoof: dict | None = None,
+    blink: dict | None = None,
+    blink_closed_min: float = DEFAULT_BLINK_CLOSED_MIN,
+    blink_open_max: float = DEFAULT_BLINK_OPEN_MAX,
+    blink_min_diff: float = DEFAULT_BLINK_MIN_DIFF,
+    review_skip_match: float = DEFAULT_REVIEW_SKIP_MATCH,
 ) -> VerifyResult:
     """Decide one marking attempt from already-analysed frames (no model here,
     so the rules are unit-testable). `others` is the rest of the enrolled
     cohort, used for the cross-match check.
 
     `challenge` is a v1 step list (judged exactly as before v2 existed) or a
-    Challenge. A v2 challenge adds: sides judged geometrically, the blink, the
-    colour flash, and office review — never an automatic pass — when the blink
-    or the flash could not be judged or the passive anti-spoof model
-    (`antispoof`, from verify_burst) suspects a print or a screen."""
+    Challenge. A v2 challenge adds: sides judged geometrically, the blink (from
+    MediaPipe's scores in `blink`, see verify_burst), the dormant colour flash,
+    and office review when the blink or the flash could not be judged or the
+    passive anti-spoof model (`antispoof`) suspects a print or a screen —
+    unless the identity match is at least `review_skip_match` (see
+    DEFAULT_REVIEW_SKIP_MATCH). v1 never has those soft reasons, so the skip
+    cannot touch it: its own review band (0.32-0.42) lies below the match
+    threshold."""
     plan = challenge if isinstance(challenge, Challenge) else Challenge(LIVENESS_V1, tuple(challenge))
     v2 = plan.protocol == LIVENESS_V2
 
@@ -1228,7 +1375,9 @@ def judge_burst(
     # --- pose challenge: each step, in order, in its own frames ---
     if v2:
         live = check_challenge_v2(analyses, plan, flash_min_signal=flash_min_signal,
-                                  flash_min_correlation=flash_min_correlation)
+                                  flash_min_correlation=flash_min_correlation, blink=blink,
+                                  blink_closed_min=blink_closed_min, blink_open_max=blink_open_max,
+                                  blink_min_diff=blink_min_diff)
         pose_ok, step_evidence = live.pose_ok, live.steps
     else:
         live = None
@@ -1389,6 +1538,14 @@ def judge_burst(
 
     if match >= match_threshold:
         if review_reasons:
+            # Only soft reasons can get here (every hard failure returned
+            # above). A strong enough match settles them: the office would be
+            # looking at photos the model is already sure about.
+            soft = all(r in SOFT_REVIEW_REASONS for r in review_reasons)
+            if soft and match >= review_skip_match:
+                detail["review_skipped"] = {"reasons": review_reasons, "match": round(match, 4),
+                                            "review_skip_match": review_skip_match}
+                return VerifyResult("pass", None, "Face verified.", **base)
             return VerifyResult(
                 "pending",
                 "LIVENESS_REVIEW",
@@ -1469,6 +1626,50 @@ def mirrored_frames(
             mad = float(np.mean(np.abs(diff - diff.mean())))
             if mad < MIRROR_MAD_MAX:
                 return x, y, mad
+    return None
+
+
+# v2 asks for ONE turn, so there is no second turn for a flipped copy to be
+# compared with. The single-turn form of the same fake: the challenge says
+# LEFT, the attacker has a photo of the student turned to the RIGHT, and flips
+# it. The face then turns the right way — but everything around it is mirrored
+# too. Taken in the same place as the burst's straight-on frames, its
+# background is the MIRROR of theirs, which a live turn's background never is.
+# Compared on the thumbnails' outer bands (beside the head, so mostly
+# background), and only when the background is asymmetric enough to tell.
+FLIP_BAND = 10                   # thumbnail columns at each side (~21% of the width)
+FLIP_MATCH_MAX = 4.0             # flipped background this close (grey levels)...
+FLIP_RATIO = 0.6                 # ...and clearly closer than unflipped
+FLIP_ASYMMETRY_MIN = 6.0         # unflipped differs at least this: telling is possible
+
+
+def _bands(thumb: np.ndarray) -> np.ndarray:
+    return np.concatenate([thumb[:, :FLIP_BAND], thumb[:, -FLIP_BAND:]], axis=1)
+
+
+def _mad(a: np.ndarray, b: np.ndarray) -> float:
+    d = a - b
+    return float(np.mean(np.abs(d - d.mean())))
+
+
+def flipped_turn(thumbs: Sequence[np.ndarray | None], plan: Challenge) -> tuple[int, int, float, float] | None:
+    """(turn frame, straight frame, flipped diff, direct diff) when a turn
+    frame's background is the mirror image of the straight-on frames'
+    background, else None."""
+    step_of = plan.step_of_frame()
+    ok = [i for i, t in enumerate(thumbs) if t is not None and i < len(step_of)
+          and float(t.std()) >= MIRROR_MIN_DETAIL]
+    turns = [i for i in ok if plan.steps[step_of[i]] in (POSE_LEFT, POSE_RIGHT)]
+    straight = [i for i in ok if plan.steps[step_of[i]] in (POSE_CENTRE, POSE_BLINK)]
+    if not straight:
+        return None
+    for x in turns:
+        bx = _bands(thumbs[x])
+        direct = [_mad(bx, _bands(thumbs[y])) for y in straight]
+        flipped = [_mad(bx, _bands(thumbs[y][:, ::-1])) for y in straight]
+        d_direct, d_flip = float(np.median(direct)), float(np.median(flipped))
+        if d_direct >= FLIP_ASYMMETRY_MIN and d_flip <= FLIP_MATCH_MAX and d_flip < FLIP_RATIO * d_direct:
+            return x, straight[int(np.argmin(flipped))], d_flip, d_direct
     return None
 
 
@@ -1557,25 +1758,53 @@ def verify_burst(
     place as a failed analysis) because position is what ties a frame to its
     challenge step."""
     images = [decode_image(b) for b in blobs]
-    mirrored = mirrored_frames([frame_thumb(img) for img in images], challenge)
+    thumbs = [frame_thumb(img) for img in images]
+    steps = challenge.steps if isinstance(challenge, Challenge) else challenge
+    mirrored = mirrored_frames(thumbs, challenge)
     if mirrored is not None:
         x, y, mad = mirrored
-        steps = challenge.steps if isinstance(challenge, Challenge) else challenge
         return VerifyResult(
             "fail",
             "MIRRORED_FRAMES",
             "These photos did not come from a live camera. This attempt has been recorded.",
             detail={"challenge": list(steps), "mirrored_pair": [x, y], "mirror_diff": round(mad, 3)},
         )
-    if isinstance(challenge, Challenge):
-        step_of = challenge.step_of_frame()
-        analyses = [analyse_frame(img, light=i < len(step_of) and challenge.steps[step_of[i]] == POSE_FLASH)
-                    for i, img in enumerate(images)]
-    else:
+    v2 = isinstance(challenge, Challenge) and challenge.protocol == LIVENESS_V2
+    if v2:
+        flipped = flipped_turn(thumbs, challenge)
+        if flipped is not None:
+            x, y, d_flip, d_direct = flipped
+            return VerifyResult(
+                "fail",
+                "MIRRORED_FRAMES",
+                "These photos did not come from a live camera. This attempt has been recorded.",
+                detail={"challenge": list(steps), "flipped_turn": [x, y],
+                        "background_diff": {"flipped": round(d_flip, 3), "direct": round(d_direct, 3)}},
+            )
+
+    if not v2:
         analyses = [analyse_frame(img) for img in images]
-    if isinstance(challenge, Challenge) and challenge.protocol == LIVENESS_V2:
-        # The centre step's two frames: straight-on, untinted, eyes open.
-        first = challenge.steps.index(POSE_CENTRE)
-        start = sum(challenge.frame_counts()[:first])
-        kwargs["antispoof"] = antispoof_scores(images, analyses, [start, start + 1])
+        return judge_burst(analyses, challenge, own_template, **kwargs)
+
+    # v2. With MediaPipe judging the blink, no frame needs the 3D landmarks
+    # (sides come from the detection keypoints), so all but the first frame use
+    # the light analysis (320 px detection, no 3D landmarks: ~0.4 s instead of
+    # ~0.7 s a frame on the dev box). The first centre frame keeps the full
+    # 640 px pass, so a small second face — a photo held up behind — is still
+    # looked for at full size once per burst. Without MediaPipe, the fallback
+    # blink measures need the landmarks on every frame.
+    step_of = challenge.step_of_frame()
+    starts = [sum(challenge.frame_counts()[:i]) for i in range(len(steps))]
+    centre = starts[steps.index(POSE_CENTRE)]
+    mp_ok = POSE_BLINK in steps and get_blink_model() is not None
+    analyses = []
+    for i, img in enumerate(images):
+        step = steps[step_of[i]] if i < len(step_of) else None
+        light = step == POSE_FLASH or (mp_ok and i != centre)
+        analyses.append(analyse_frame(img, light=light))
+    if mp_ok:
+        b = starts[steps.index(POSE_BLINK)]
+        kwargs["blink"] = {"closed": blink_scores(images[b]), "opened": blink_scores(images[b + 1])}
+    # The centre step's two frames: straight-on, untinted, eyes open.
+    kwargs["antispoof"] = antispoof_scores(images, analyses, [centre, centre + 1])
     return judge_burst(analyses, challenge, own_template, **kwargs)

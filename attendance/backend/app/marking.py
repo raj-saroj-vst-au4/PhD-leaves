@@ -296,7 +296,7 @@ def settle_failed(attempt_id: int) -> None:
 # Challenge issue (rate-limited)
 # ---------------------------------------------------------------------------
 #
-# There are only ten v1 sequences (24 in v2), so an unlimited supply of
+# There are only ten v1 sequences (four in v2), so an unlimited supply of
 # challenges would let a client re-roll until it drew one its stock photos
 # happen to fit. Issue is capped per minute and per day (a multiple of the
 # attempt budget: tapping Mark and then cancelling costs a challenge but not an
@@ -599,7 +599,10 @@ def purge_templates() -> dict:
 
 
 def thresholds() -> dict:
-    from .faces import DEFAULT_ANTISPOOF_REVIEW, DEFAULT_FLASH_MIN_CORRELATION, DEFAULT_FLASH_MIN_SIGNAL
+    from .faces import (
+        DEFAULT_ANTISPOOF_REVIEW, DEFAULT_BLINK_CLOSED_MIN, DEFAULT_BLINK_MIN_DIFF, DEFAULT_BLINK_OPEN_MAX,
+        DEFAULT_FLASH_MIN_CORRELATION, DEFAULT_FLASH_MIN_SIGNAL, DEFAULT_REVIEW_SKIP_MATCH,
+    )
 
     return {
         "match_threshold": get_float_setting("face_match_threshold", 0.42),
@@ -614,6 +617,13 @@ def thresholds() -> dict:
         "flash_min_signal": get_float_setting("flash_min_signal", DEFAULT_FLASH_MIN_SIGNAL),
         "flash_min_correlation": get_float_setting("flash_min_correlation", DEFAULT_FLASH_MIN_CORRELATION),
         "antispoof_review_threshold": get_float_setting("antispoof_review_threshold", DEFAULT_ANTISPOOF_REVIEW),
+        "blink_closed_min": get_float_setting("blink_closed_min", DEFAULT_BLINK_CLOSED_MIN),
+        "blink_open_max": get_float_setting("blink_open_max", DEFAULT_BLINK_OPEN_MAX),
+        "blink_min_diff": get_float_setting("blink_min_diff", DEFAULT_BLINK_MIN_DIFF),
+        # A soft liveness doubt (blink unclear, flash too weak, anti-spoof
+        # suspicion) does not send a mark to review when the match is this
+        # strong — faces.DEFAULT_REVIEW_SKIP_MATCH.
+        "review_skip_match": get_float_setting("review_skip_match", DEFAULT_REVIEW_SKIP_MATCH),
     }
 
 
@@ -621,7 +631,7 @@ def thresholds() -> dict:
 # Liveness protocol (feature flag)
 # ---------------------------------------------------------------------------
 #
-# Liveness v2 (named turns, blink, colour flash — faces.py) ships dark:
+# Liveness v2 (one named turn and a blink — faces.py) ships dark:
 #   liveness_v2 = '1'            -> every student gets v2
 #   liveness_v2_students = [ids] -> just these students.id (a pilot), while
 #                                   liveness_v2 stays '0' for everyone else
@@ -656,10 +666,10 @@ def liveness_protocol(student_id: int | None) -> int:
 
 
 def flash_enabled() -> bool:
-    """The colour flash is part of v2 unless the office switches it off
-    (att_settings flash_enabled='0') — e.g. if the office light turns out too
-    bright for it and every attempt lands in review."""
-    return get_setting("flash_enabled", "1") != "0"
+    """The colour flash is OFF unless att_settings flash_enabled='1': the pilot
+    found it too slow and, in the office light, too weak to judge (faces.py,
+    "colour flash"). It stays available as an extra step."""
+    return get_setting("flash_enabled", "0") == "1"
 
 
 def log_blocked(code: str, *, student_id: int | None, source_ip: str | None, day: date | None = None) -> None:

@@ -107,7 +107,7 @@
     body.innerHTML = '<div class="col-span-3 py-10 text-center text-sm text-gray-500"><i class="fas fa-circle-notch fa-spin mr-2 text-blue-500"></i>Loading…</div>';
     modal.classList.remove('hidden');
     // Every stored frame: a marking burst is 2 per challenge step (up to 8;
-    // liveness v2 sends 15, seven of them under the colour flash), an
+    // liveness v2 sends 6 — 13 with the optional colour flash), an
     // enrollment capture up to 20. The endpoint 404s past the last one.
     // Shown as data: URLs, not blob: ones. Production's nginx sends
     // `Content-Security-Policy: default-src https: data: ...`, which has no
@@ -405,8 +405,11 @@
              ['max_attempts_per_day', 'Max failed attempts/day'], ['frame_retention_days', 'Photo retention (days)'],
              ['enrollment_min_frames', 'Min enrollment frames'],
              // Liveness v2 only — see the RUNBOOK before changing these.
-             ['flash_min_signal', 'Flash: min skin colour change'], ['flash_min_correlation', 'Flash: min correlation'],
-             ['antispoof_review_threshold', 'Anti-spoof: review at ≥']].map(([k, label]) => `
+             ['review_skip_match', 'v2: no review when match ≥'],
+             ['blink_closed_min', 'Blink: shut eyes score ≥'], ['blink_open_max', 'Blink: open eyes score ≤'],
+             ['blink_min_diff', 'Blink: shut − open ≥'],
+             ['antispoof_review_threshold', 'Anti-spoof: review at ≥'],
+             ['flash_min_signal', 'Flash (off): min colour change'], ['flash_min_correlation', 'Flash (off): min correlation']].map(([k, label]) => `
             <div class="flex items-center gap-2 py-2 text-sm">
               <span class="min-w-0 flex-1 text-gray-700">${label}</span>
               <input value="${esc(s[k] || '')}" data-set="${k}" class="form-input w-20 py-1.5 text-right tabular-nums">
@@ -427,12 +430,12 @@
             <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="strict_mode" ${s.strict_mode === '1' ? 'checked' : ''}>
           </div>
           <div class="flex items-start gap-3 py-3 text-sm">
-            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Liveness v2 for everyone</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Named head turns, a blink and a colour flash instead of the original turn-either-way check. Off: only the pilot students below get it.</p></div>
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Liveness v2 for everyone</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">One named head turn (left or right) and a blink, instead of the original turn-either-way check. Off: only the pilot students below get it.</p></div>
             <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="liveness_v2" ${s.liveness_v2 === '1' ? 'checked' : ''}>
           </div>
           <div class="flex items-start gap-3 py-3 text-sm">
-            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Colour flash (liveness v2)</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Switch off if the room is so bright that most marks go to review as "flash_weak".</p></div>
-            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="flash_enabled" ${s.flash_enabled !== '0' ? 'checked' : ''}>
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Colour flash (liveness v2)</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Off by default: adds ~3 s, and in bright rooms it cannot be judged. On: an extra step where the screen flashes colours.</p></div>
+            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="flash_enabled" ${s.flash_enabled === '1' ? 'checked' : ''}>
           </div>
           <div class="py-3 text-sm">
             <p class="font-medium text-gray-900">Liveness v2 pilot students</p>

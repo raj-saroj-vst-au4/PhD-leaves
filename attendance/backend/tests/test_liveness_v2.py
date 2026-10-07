@@ -1,7 +1,9 @@
 """Liveness v2 (faces.py "Liveness v2"): the convention-free turn direction,
-blink judgement, the colour-flash check, v2 challenges and their judgement,
-the feature flag, and that v1 is untouched. No model: frames are synthetic
-FrameAnalysis objects, or synthetic images for the pixel-level measures."""
+blink judgement (MediaPipe scores, and the landmark fallback), the dormant
+colour-flash check, v2 challenges and their judgement, review_skip_match, the
+single-turn mirror check, the feature flag, and that v1 is untouched. No
+model: frames are synthetic FrameAnalysis objects, blendshape scores are given
+as numbers, and the pixel-level measures run on synthetic images."""
 
 import json
 import random
@@ -16,7 +18,7 @@ from app import faces, main, marking
 from app.auth import Principal
 from app.faces import (
     LIVENESS_V1, LIVENESS_V2, POSE_BLINK, POSE_CENTRE, POSE_FLASH, POSE_LEFT, POSE_RIGHT,
-    Challenge, FrameAnalysis, check_blink, check_challenge_v2, check_flash, judge_burst,
+    Challenge, FrameAnalysis, check_blink, check_blink_mp, check_challenge_v2, check_flash, judge_burst,
     new_challenge_v2, parse_challenge_spec, side_from_ratio, turn_ratio,
 )
 
@@ -178,7 +180,48 @@ def test_blink_is_relative_to_the_students_own_eyes():
 
 
 # ---------------------------------------------------------------------------
-# Colour flash
+# The blink, on MediaPipe's eyeBlinkLeft/Right scores (0 open .. 1 shut)
+# ---------------------------------------------------------------------------
+#
+# Reference points from the real model (Python MediaPipe 0.10.35, IMAGE mode)
+# on frames the browser harness uploaded and on t1.jpg crops: open eyes
+# 0.21/0.10, the same face eyes shut 0.64/0.52, people squinting while laughing
+# 0.69/0.35 and 0.61/0.53.
+
+@pytest.mark.parametrize("closed,opened,expected", [
+    ((0.64, 0.52), (0.21, 0.10), "seen"),          # the harness's real shut / open frames
+    ((0.85, 0.80), (0.05, 0.04), "seen"),          # a full blink
+    ((0.21, 0.10), (0.21, 0.10), "not_seen"),      # the "shut" frame is as open as the open one
+    ((0.26, 0.20), (0.18, 0.12), "not_seen"),
+    ((0.50, 0.42), (0.40, 0.30), "unclear"),       # some closure, not enough apart
+    ((0.75, 0.70), (0.50, 0.46), "unclear"),       # the open frame never really opened
+    ((0.30, 0.22), (0.10, 0.08), "unclear"),       # a little lower, not shut
+    (None, (0.2, 0.1), "unclear"),                 # no face found in a frame
+])
+def test_mediapipe_blink(closed, opened, expected):
+    verdict, ev = check_blink_mp(closed, opened)
+    assert verdict == expected, ev
+    assert ev["method"] == "mediapipe"
+
+
+def test_mediapipe_blink_thresholds_come_from_settings():
+    assert check_blink_mp((0.64, 0.52), (0.21, 0.10), closed_min=0.7)[0] == "unclear"
+    assert check_blink_mp((0.64, 0.52), (0.21, 0.10), min_diff=0.5)[0] == "unclear"
+    assert check_blink_mp((0.80, 0.80), (0.45, 0.45), open_max=0.5)[0] == "seen"
+
+
+def test_the_phone_only_sends_what_the_server_will_call_shut():
+    """liveness.js keeps a frame as 'shut' only at a mean >= 0.50 with each
+    eye >= 0.40, then an open frame 0.28 below it and at most 0.34; the
+    server's 'seen' is >= 0.45, <= 0.40 and 0.25 apart. 'Not seen' needs the
+    shut frame under 0.30 — 0.20 below anything the phone sends as shut."""
+    assert check_blink_mp((0.50, 0.50), (0.22, 0.22))[0] == "seen"
+    assert check_blink_mp((0.55, 0.45), (0.22, 0.22))[0] == "seen"
+    assert faces.BLINK_NOT_SEEN_MAX <= 0.50 - 0.20
+
+
+# ---------------------------------------------------------------------------
+# Colour flash (dormant: att_settings flash_enabled='1')
 # ---------------------------------------------------------------------------
 #
 # Synthetic frames: a wall and a skin-coloured oval, rendered in linear light
@@ -291,63 +334,73 @@ def test_skin_and_background_are_rgb():
 # v2 challenges
 # ---------------------------------------------------------------------------
 
-def test_v2_challenges_are_well_formed():
+def test_v2_challenges_are_centre_then_one_named_turn_and_a_blink():
     for _ in range(2000):
         c = new_challenge_v2()
-        assert c.protocol == LIVENESS_V2 and c.steps[0] == POSE_CENTRE
-        assert sorted(c.steps[1:]) == sorted((POSE_LEFT, POSE_RIGHT, POSE_BLINK, POSE_FLASH))
-        assert len(c.flash_colors) == faces.FLASH_COUNT == len(c.flash_ms)
-        assert all(a != b for a, b in zip(c.flash_colors, c.flash_colors[1:]))
-        assert all(faces.FLASH_MIN_MS <= ms <= faces.FLASH_MAX_MS for ms in c.flash_ms)
+        assert c.protocol == LIVENESS_V2 and c.steps[0] == POSE_CENTRE and len(c.steps) == 3
+        assert len([s for s in c.steps if s in (POSE_LEFT, POSE_RIGHT)]) == 1
+        assert POSE_BLINK in c.steps and POSE_FLASH not in c.steps and not c.flash_colors
+        assert c.frame_counts() == [2, 2, 2]
         assert len(c.spec()) <= 100                     # att_challenges.challenge VARCHAR(100)
         assert parse_challenge_spec(c.spec()) == c
 
 
-def test_v2_challenges_are_uniform_and_use_the_csprng():
-    assert len(faces.SEQUENCES_V2) == 24
+def test_side_and_order_are_drawn_uniformly_with_the_csprng():
+    assert len(faces.SEQUENCES_V2) == 4
     rng = random.Random(9)
-    counts = Counter(new_challenge_v2(rng).steps for _ in range(48000))
+    counts = Counter(new_challenge_v2(rng).steps for _ in range(40000))
     assert set(counts) == set(faces.SEQUENCES_V2)
-    assert max(counts.values()) / 48000 < 1 / 24 * 1.15
+    assert max(counts.values()) / 40000 < 0.25 * 1.05
+    sides = Counter(next(s for s in steps if s in (POSE_LEFT, POSE_RIGHT)) for steps in counts.elements())
+    assert abs(sides[POSE_LEFT] / 40000 - 0.5) < 0.02
     assert isinstance(faces._rng, random.SystemRandom)
+
+
+def test_the_flash_only_joins_when_switched_on():
+    for _ in range(500):
+        c = new_challenge_v2(flash=True)
+        assert c.steps[0] == POSE_CENTRE and len(c.steps) == 4 and POSE_FLASH in c.steps
+        assert len(c.flash_colors) == faces.FLASH_COUNT == len(c.flash_ms)
+        assert all(a != b for a, b in zip(c.flash_colors, c.flash_colors[1:]))
+        assert all(faces.FLASH_MIN_MS <= ms <= faces.FLASH_MAX_MS for ms in c.flash_ms)
+        assert parse_challenge_spec(c.spec()) == c and len(c.spec()) <= 100
+    assert len(faces.SEQUENCES_V2_FLASH) == 12
 
 
 def test_a_v2_burst_fits_through_the_php_forwarder():
     """attapi/index.php receives the frames as PHP uploads first, and PHP's
     default max_file_uploads is 20: a burst of more files is silently cut."""
-    longest = max(sum(Challenge(LIVENESS_V2, seq, tuple("RGBYMCR"), (400,) * 7).frame_counts())
-                  for seq in faces.SEQUENCES_V2)
-    assert longest == 15 and longest <= 20
+    assert max(sum(Challenge(LIVENESS_V2, seq).frame_counts()) for seq in faces.SEQUENCES_V2) == 6
+    with_flash = max(sum(Challenge(LIVENESS_V2, seq, tuple("RGBYMCR"), (400,) * 7).frame_counts())
+                     for seq in faces.SEQUENCES_V2_FLASH)
+    assert with_flash == 13 and with_flash <= 20
 
 
 def test_flash_never_changes_faster_than_three_times_a_second():
     assert faces.FLASH_MIN_MS > 1000 / 3
 
 
-def test_v2_without_the_flash():
-    c = new_challenge_v2(flash=False)
-    assert POSE_FLASH not in c.steps and not c.flash_colors
-    assert c.steps in faces.SEQUENCES_V2_NO_FLASH and parse_challenge_spec(c.spec()) == c
-    assert c.frame_counts() == [2, 2, 2, 2]
-
-
 def test_frame_counts_and_timing_floor():
-    c = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_FLASH, POSE_LEFT, POSE_BLINK, POSE_RIGHT),
-                  tuple("RGBYMCR"), (400,) * 7)
-    assert c.frame_counts() == [2, 7, 2, 2, 2]
-    assert c.step_of_frame()[:4] == [0, 0, 1, 1] and c.step_of_frame()[-1] == 4
-    assert c.min_seconds() == pytest.approx(0.4 * 4 + 0.8 * 2.8)
+    c = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_BLINK, POSE_RIGHT))
+    assert c.frame_counts() == [2, 2, 2] and c.step_of_frame() == [0, 0, 1, 1, 2, 2]
+    assert c.min_seconds() == pytest.approx(0.4 * 3)
+    f = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_FLASH, POSE_LEFT, POSE_BLINK), tuple("RGBYMCR"), (400,) * 7)
+    assert f.frame_counts() == [2, 7, 2, 2]
+    assert f.min_seconds() == pytest.approx(0.4 * 3 + 0.8 * 2.8)
 
 
 @pytest.mark.parametrize("spec", [
-    "v2:centre,left,left,blink",                                           # not a v2 sequence
-    "v2:left,centre,right,blink,flash|RGBYMCR|400,400,400,400,400,400,400",  # centre not first
-    "v2:centre,left,right,blink,flash",                                    # flash without colours
-    "v2:centre,left,right,blink,flash|RRBYMCR|400,400,400,400,400,400,400",  # repeat back to back
-    "v2:centre,left,right,blink,flash|RGBYMCX|400,400,400,400,400,400,400",  # unknown colour
-    "v2:centre,left,right,blink,flash|RGBYMCR|100,400,400,400,400,400,400",  # too fast
-    "v2:centre,left,right,blink,flash|RGBYMC|400,400,400,400,400,400",       # too few
-    "v2:centre,left,right,blink|RGB|400,400,400",                          # colours without a flash
+    "v2:centre,left,right,blink",                                          # both sides: no longer issued
+    "v2:centre,left,flash,blink,right|RGBYMCR|400,400,400,400,400,400,400",  # the first pilot's shape
+    "v2:left,centre,blink",                                                # centre not first
+    "v2:centre,left,left",
+    "v2:centre,blink",                                                     # no turn
+    "v2:centre,left,blink,flash",                                          # flash without colours
+    "v2:centre,left,blink,flash|RRBYMCR|400,400,400,400,400,400,400",      # repeat back to back
+    "v2:centre,left,blink,flash|RGBYMCX|400,400,400,400,400,400,400",      # unknown colour
+    "v2:centre,left,blink,flash|RGBYMCR|100,400,400,400,400,400,400",      # too fast
+    "v2:centre,left,blink,flash|RGBYMC|400,400,400,400,400,400",           # too few
+    "v2:centre,left,blink|RGB|400,400,400",                                # colours without a flash
     "v2:centre,turn,other",
     "centre,left",
 ])
@@ -383,8 +436,13 @@ ALICE_T = [near(ALICE, 0.1, s).tolist() for s in range(10, 14)]
 BOB_T = [near(BOB, 0.1, s).tolist() for s in range(20, 24)]
 TH = dict(match_threshold=0.42, review_threshold=0.32, liveness_threshold=0.60, crossmatch_margin=0.05)
 
-PLAN = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_LEFT, POSE_FLASH, POSE_BLINK, POSE_RIGHT),
-                 tuple("RGBYMCR"), (400,) * 7)
+# frames: 0,1 centre | 2,3 left | 4 shut, 5 open
+PLAN = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_LEFT, POSE_BLINK))
+PLAN_FLASH = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_LEFT, POSE_FLASH, POSE_BLINK),
+                       tuple("RGBYMCR"), (400,) * 7)
+BLINKED = {"closed": (0.64, 0.52), "opened": (0.21, 0.10)}
+NO_BLINK = {"closed": (0.21, 0.10), "opened": (0.20, 0.11)}
+UNCLEAR = {"closed": (0.50, 0.42), "opened": (0.40, 0.30)}
 
 
 def genuine_burst(plan=PLAN, k=0.1, seed=0, over=None):
@@ -408,108 +466,301 @@ def genuine_burst(plan=PLAN, k=0.1, seed=0, over=None):
     return out
 
 
+def weaker(score_target_seed=9, a=0.45):
+    w = (a * ALICE + np.sqrt(1 - a * a) * person(score_target_seed)).astype(np.float32)
+    return w / np.linalg.norm(w)
+
+
 def test_genuine_v2_burst_passes():
-    res = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[(2, BOB_T)], **TH)
+    res = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[(2, BOB_T)], blink=BLINKED, **TH)
     assert res.verdict == "pass", (res.fail_code, res.detail)
     d = res.detail
-    assert d["protocol"] == 2 and d["blink"] == "seen" and d["flash"] == "pass"
-    assert d["closed_frames"] == [11] and d["flash_frames"] == list(range(4, 11))
+    assert d["protocol"] == 2 and d["blink"] == "seen" and d["flash"] == "absent"
+    assert d["closed_frames"] == [4] and d["frames_submitted"] == 6
+    assert d["steps"][2]["blink"]["method"] == "mediapipe"
+    assert "review_skipped" not in d
 
 
-def test_named_sides_must_be_the_ones_asked_for():
-    swapped = genuine_burst(over={2: fa(side=POSE_RIGHT, emb=ALICE), 3: fa(side=POSE_RIGHT, emb=ALICE),
-                               13: fa(side=POSE_LEFT, emb=ALICE), 14: fa(side=POSE_LEFT, emb=ALICE)})
-    res = judge_burst(swapped, PLAN, ALICE_T, others=[], **TH)
+def test_without_mediapipe_the_landmark_measures_judge_the_blink():
+    res = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[], blink=None, **TH)
+    assert res.verdict == "pass" and res.detail["blink"] == "seen"
+    assert "method" not in res.detail["steps"][2]["blink"]
+
+
+def test_the_named_side_must_be_the_one_asked_for():
+    wrong = genuine_burst(over={2: fa(side=POSE_RIGHT, emb=ALICE), 3: fa(side=POSE_RIGHT, emb=ALICE)})
+    res = judge_burst(wrong, PLAN, ALICE_T, others=[], blink=BLINKED, **TH)
     assert res.fail_code == "POSE_CHALLENGE_FAILED"
-    assert [s["ok"] for s in res.detail["steps"]] == [True, False, True, True, False]
+    assert [s["ok"] for s in res.detail["steps"]] == [True, False, True]
+    right_plan = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_BLINK, POSE_RIGHT))
+    burst = genuine_burst(plan=right_plan)
+    assert judge_burst(burst, right_plan, ALICE_T, others=[], blink=BLINKED, **TH).verdict == "pass"
+
+
+def test_a_wrong_side_is_never_waved_through_by_a_strong_match():
+    wrong = genuine_burst(over={2: fa(side=POSE_RIGHT, emb=ALICE), 3: fa(side=POSE_RIGHT, emb=ALICE)})
+    res = judge_burst(wrong, PLAN, ALICE_T, others=[], blink=BLINKED, review_skip_match=0.0, **TH)
+    assert res.verdict == "fail" and res.fail_code == "POSE_CHALLENGE_FAILED"
 
 
 def test_a_frame_caught_mid_turn_is_neutral_but_a_pair_spanning_two_poses_fails():
     between = genuine_burst(over={2: fa(turn=0.09, emb=near(ALICE, 0.15, 2))})
-    assert judge_burst(between, PLAN, ALICE_T, others=[], **TH).verdict == "pass"
+    assert judge_burst(between, PLAN, ALICE_T, others=[], blink=BLINKED, **TH).verdict == "pass"
     spanning = genuine_burst(over={2: fa(side=POSE_CENTRE, emb=near(ALICE, 0.15, 2))})
-    assert judge_burst(spanning, PLAN, ALICE_T, others=[], **TH).fail_code == "POSE_CHALLENGE_FAILED"
+    res = judge_burst(spanning, PLAN, ALICE_T, others=[], blink=BLINKED, **TH)
+    assert res.fail_code == "POSE_CHALLENGE_FAILED"
 
 
 def test_the_shut_eye_frame_is_not_held_to_the_match_threshold():
     """ArcFace scores a shut-eyed frame lower; it only has to be the same
     person as the rest of the burst."""
-    weak = (0.45 * ALICE + 0.89 * person(9)).astype(np.float32)
-    weak /= np.linalg.norm(weak)
+    weak = weaker()
     assert faces.best_score(weak, ALICE_T) < 0.42
-    burst = genuine_burst(over={11: fa(emb=weak, ear=0.22, dark=0.08)})
-    res = judge_burst(burst, PLAN, ALICE_T, others=[(2, BOB_T)],
+    burst = genuine_burst(over={4: fa(emb=weak, ear=0.22, dark=0.08)})
+    res = judge_burst(burst, PLAN, ALICE_T, others=[(2, BOB_T)], blink=BLINKED,
                       **dict(TH, consistency_threshold=0.05))
     assert res.verdict == "pass", (res.fail_code, res.detail)
     # ...but the same frame anywhere else sinks the burst (weakest frame decides).
     burst = genuine_burst(over={0: fa(emb=weak)})
-    assert judge_burst(burst, PLAN, ALICE_T, others=[], **dict(TH, consistency_threshold=0.05)).verdict != "pass"
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=BLINKED, **dict(TH, consistency_threshold=0.05))
+    assert res.verdict != "pass"
 
 
 def test_someone_else_blinking_is_caught():
-    burst = genuine_burst(over={11: fa(emb=near(BOB, 0.1, 5), ear=0.22, dark=0.08)})
-    res = judge_burst(burst, PLAN, ALICE_T, others=[(2, BOB_T)], **TH)
+    burst = genuine_burst(over={4: fa(emb=near(BOB, 0.1, 5), ear=0.22, dark=0.08)})
+    res = judge_burst(burst, PLAN, ALICE_T, others=[(2, BOB_T)], blink=BLINKED, **TH)
     assert res.fail_code == "CROSSMATCH" and res.crossmatch_student_id == 2
-    stranger = genuine_burst(over={11: fa(emb=person(77), ear=0.22, dark=0.08)})
-    assert judge_burst(stranger, PLAN, ALICE_T, others=[], **TH).fail_code == "MIXED_FACES"
+    stranger = genuine_burst(over={4: fa(emb=person(77), ear=0.22, dark=0.08)})
+    assert judge_burst(stranger, PLAN, ALICE_T, others=[], blink=BLINKED, **TH).fail_code == "MIXED_FACES"
 
 
-def test_no_blink_fails_and_an_unclear_blink_goes_to_review():
-    res = judge_burst(genuine_burst(over={11: fa(emb=near(ALICE, 0.15, 11))}), PLAN, ALICE_T, others=[], **TH)
+def test_a_definite_no_blink_fails_even_with_a_strong_match():
+    res = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[], blink=NO_BLINK, review_skip_match=0.0, **TH)
+    assert res.verdict == "fail" and res.fail_code == "BLINK_CHALLENGE_FAILED"
+
+
+def test_a_blink_with_the_head_turned_fails():
+    burst = genuine_burst(over={4: fa(side=POSE_LEFT, emb=near(ALICE, 0.15, 4))})
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=BLINKED, **TH)
     assert res.fail_code == "BLINK_CHALLENGE_FAILED"
-    res = judge_burst(genuine_burst(over={11: fa(emb=near(ALICE, 0.15, 11), ear=0.29, dark=0.30)}),
-                      PLAN, ALICE_T, others=[], **TH)
-    assert res.verdict == "pending" and res.fail_code == "LIVENESS_REVIEW"
+
+
+# --- review_skip_match ------------------------------------------------------
+
+def test_an_unclear_blink_passes_on_a_strong_match_and_says_so():
+    res = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[], blink=UNCLEAR, **TH)
+    assert res.match_score >= faces.DEFAULT_REVIEW_SKIP_MATCH
+    assert res.verdict == "pass" and res.fail_code is None
     assert res.detail["review_reasons"] == ["blink_unclear"]
+    assert res.detail["review_skipped"] == {"reasons": ["blink_unclear"], "match": round(res.match_score, 4),
+                                            "review_skip_match": faces.DEFAULT_REVIEW_SKIP_MATCH}
 
 
-def test_flash_outcomes():
-    weak = judge_burst(genuine_burst(k=0.01, seed=3), PLAN, ALICE_T, others=[], **TH)
-    assert weak.verdict == "pending" and weak.detail["review_reasons"] == ["flash_weak"]
-    assert weak.detail["steps"][2]["flash"]["signal"] < faces.DEFAULT_FLASH_MIN_SIGNAL
+def test_an_unclear_blink_goes_to_review_below_review_skip_match():
+    res = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[], blink=UNCLEAR, review_skip_match=0.999, **TH)
+    assert res.verdict == "pending" and res.fail_code == "LIVENESS_REVIEW"
+    assert "review_skipped" not in res.detail
+    # A real burst whose weakest open-eye frame matches at ~0.5: above the
+    # match threshold, below 0.65 -> review, as before.
+    mid = weaker(a=0.55)
+    score = faces.best_score(mid, ALICE_T)
+    assert 0.42 <= score < 0.65, score
+    burst = genuine_burst(over={1: fa(emb=mid)})
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=UNCLEAR, **dict(TH, consistency_threshold=0.05))
+    assert res.verdict == "pending" and res.match_score == pytest.approx(score, abs=1e-6)
 
-    other = Challenge(LIVENESS_V2, PLAN.steps, tuple("GBRCYMB"), PLAN.flash_ms)
-    lit_wrong = genuine_burst(plan=other)          # the face followed a different sequence
-    res = judge_burst(lit_wrong, PLAN, ALICE_T, others=[], **TH)
-    assert res.fail_code == "FLASH_CHALLENGE_FAILED", res.detail["steps"][2]
 
-    tuned = judge_burst(genuine_burst(), PLAN, ALICE_T, others=[], **dict(TH, flash_min_signal=0.5))
-    assert tuned.verdict == "pending"
+def test_review_skip_match_reads_the_open_eye_minimum():
+    """The score that decides is the one stored as att_attempts.match_score:
+    the weakest OPEN-eye frame. A weak shut-eye frame does not pull it down."""
+    burst = genuine_burst(over={4: fa(emb=weaker(a=0.5), ear=0.22, dark=0.08)})
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=UNCLEAR, **dict(TH, consistency_threshold=0.05))
+    assert res.verdict == "pass" and res.detail["review_skipped"]["match"] == round(res.match_score, 4)
+    assert res.match_score >= 0.65
 
 
-def test_antispoof_only_ever_sends_to_review():
+def test_antispoof_is_a_soft_reason():
     burst = genuine_burst()
     high = {"spoof": 0.97, "live": 0.03, "print": 0.5, "replay": 0.47}
-    res = judge_burst(burst, PLAN, ALICE_T, others=[], antispoof=high, **TH)
-    assert res.verdict == "pending" and res.detail["review_reasons"] == ["antispoof"]
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=BLINKED, antispoof=high, **TH)
+    assert res.verdict == "pass" and res.detail["review_skipped"]["reasons"] == ["antispoof"]
     assert res.detail["antispoof"] == high
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=BLINKED, antispoof=high,
+                      review_skip_match=0.999, **TH)
+    assert res.verdict == "pending" and res.detail["review_reasons"] == ["antispoof"]
     low = dict(high, spoof=0.2, live=0.8)
-    assert judge_burst(burst, PLAN, ALICE_T, others=[], antispoof=low, **TH).verdict == "pass"
-    assert judge_burst(burst, PLAN, ALICE_T, others=[], antispoof=None, **TH).verdict == "pass"
-    # It never turns a failure into anything else, nor a pass into a failure.
-    bad = genuine_burst(over={11: fa(emb=near(ALICE, 0.15, 11))})
-    assert judge_burst(bad, PLAN, ALICE_T, others=[], antispoof=high, **TH).fail_code == "BLINK_CHALLENGE_FAILED"
-    looser = judge_burst(burst, PLAN, ALICE_T, others=[], antispoof=high,
-                         **dict(TH, antispoof_review_threshold=0.99))
-    assert looser.verdict == "pass"
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=BLINKED, antispoof=low, **TH)
+    assert res.verdict == "pass" and "review_reasons" not in res.detail
+    # It never turns a failure into anything else.
+    res = judge_burst(burst, PLAN, ALICE_T, others=[], blink=NO_BLINK, antispoof=high, **TH)
+    assert res.fail_code == "BLINK_CHALLENGE_FAILED"
+
+
+def test_v1_review_is_untouched_by_review_skip_match():
+    """v1's review band (0.32-0.42) lies below the match threshold, and v1 has
+    no soft liveness reasons, so even a zero review_skip_match changes nothing."""
+    from app.faces import POSE_OTHER, POSE_TURN
+    ch = [POSE_CENTRE, POSE_TURN, POSE_OTHER]
+    mixed = (ALICE * 0.40 + person(9) * 0.92)
+    mixed = (mixed / np.linalg.norm(mixed)).astype(np.float32)
+    frames = [FrameAnalysis(ok=True, embedding=e, pose=p, texture_score=0.9)
+              for e, p in zip([near(ALICE, 0.15, 1), near(ALICE, 0.15, 2), near(ALICE, 0.15, 3),
+                               near(ALICE, 0.15, 4), near(ALICE, 0.15, 5), mixed],
+                              [POSE_CENTRE, POSE_CENTRE, POSE_LEFT, POSE_LEFT, POSE_RIGHT, POSE_RIGHT])]
+    res = judge_burst(frames, ch, ALICE_T, others=[], review_skip_match=0.0,
+                      **dict(TH, consistency_threshold=-1.0))
+    assert res.verdict == "pending" and res.fail_code == "LOW_CONFIDENCE"
+    assert "review_skipped" not in res.detail and "protocol" not in res.detail
+
+
+# --- the dormant flash, if switched on --------------------------------------
+
+def test_flash_outcomes_when_switched_on():
+    weak = judge_burst(genuine_burst(plan=PLAN_FLASH, k=0.01, seed=3), PLAN_FLASH, ALICE_T, others=[],
+                       blink=BLINKED, review_skip_match=0.999, **TH)
+    assert weak.verdict == "pending" and weak.detail["review_reasons"] == ["flash_weak"]
+    assert weak.detail["steps"][2]["flash"]["signal"] < faces.DEFAULT_FLASH_MIN_SIGNAL
+    skipped = judge_burst(genuine_burst(plan=PLAN_FLASH, k=0.01, seed=3), PLAN_FLASH, ALICE_T, others=[],
+                          blink=BLINKED, **TH)
+    assert skipped.verdict == "pass" and skipped.detail["review_skipped"]["reasons"] == ["flash_weak"]
+
+    other = Challenge(LIVENESS_V2, PLAN_FLASH.steps, tuple("GBRCYMB"), PLAN_FLASH.flash_ms)
+    lit_wrong = genuine_burst(plan=other)          # the face followed a different sequence
+    res = judge_burst(lit_wrong, PLAN_FLASH, ALICE_T, others=[], blink=BLINKED, review_skip_match=0.0, **TH)
+    assert res.fail_code == "FLASH_CHALLENGE_FAILED", res.detail["steps"][2]
+
+    ok = judge_burst(genuine_burst(plan=PLAN_FLASH), PLAN_FLASH, ALICE_T, others=[], blink=BLINKED, **TH)
+    assert ok.verdict == "pass" and ok.detail["flash"] == "pass" and ok.detail["closed_frames"] == [11]
 
 
 def test_wrong_frame_count_fails_the_pose_check():
     assert not check_challenge_v2(genuine_burst()[:-1], PLAN).pose_ok
 
 
-def test_mirrored_turn_frames_are_caught_in_v2():
-    rng = np.random.default_rng(0)
-    turned = rng.uniform(0, 255, (64, 48)).astype(np.float32)
-    thumbs = [rng.uniform(0, 255, (64, 48)).astype(np.float32) for _ in range(sum(PLAN.frame_counts()))]
-    thumbs[2] = turned                     # 'left'
-    thumbs[13] = turned[:, ::-1].copy()    # 'right' = its mirror
-    assert faces.mirrored_frames(thumbs, PLAN)[:2] == (2, 13)
-    # Flash frames are never compared, even mirrored ones (a still face under
-    # changing light legitimately looks alike).
-    thumbs[13] = rng.uniform(0, 255, (64, 48)).astype(np.float32)
-    thumbs[5], thumbs[6] = turned, turned[:, ::-1].copy()
-    assert faces.mirrored_frames(thumbs, PLAN) is None
+# ---------------------------------------------------------------------------
+# Mirrored frames with a single turn
+# ---------------------------------------------------------------------------
+#
+# Synthetic 480x640 "photos": an asymmetric background (blobs on a gradient,
+# like tests/test_mark_flow.py) with a head-sized ellipse in the middle.
+
+def backdrop(seed=4, plain=False):
+    rng = np.random.default_rng(seed)
+    img = np.tile(np.linspace(40, 200, 480, dtype=np.uint8), (640, 1))
+    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if plain:
+        img[:] = 120
+        return img
+    for _ in range(25):
+        c = (int(rng.integers(0, 480)), int(rng.integers(0, 640)))
+        cv2.circle(img, c, int(rng.integers(8, 60)), tuple(int(v) for v in rng.integers(0, 255, 3)), -1)
+    return img
+
+
+def shot(bg, head_x=240, shade=170, shift=0):
+    img = np.roll(bg, shift, axis=1).copy()
+    cv2.ellipse(img, (head_x, 300), (105, 140), 0, 0, 360, (shade, shade, shade + 10), -1)
+    cv2.circle(img, (head_x + 20, 280), 12, (40, 40, 40), -1)
+    return img
+
+
+def thumbs_of(images):
+    return [faces.frame_thumb(img) for img in images]
+
+
+def test_one_turn_has_no_second_turn_to_mirror():
+    imgs = [shot(backdrop())] * 6
+    assert faces.mirrored_frames(thumbs_of(imgs), PLAN) is None
+
+
+def test_a_flipped_photo_for_the_turn_is_caught_by_its_background():
+    """Asked LEFT, holding a photo turned RIGHT from the same session: flip it.
+    The face now turns the right way, but the background is mirrored."""
+    bg = backdrop()
+    centre, other_side = shot(bg), shot(bg, head_x=225, shade=150)
+    imgs = [centre, shot(bg, shift=2), cv2.flip(other_side, 1), cv2.flip(other_side, 1), centre, shot(bg, shift=-2)]
+    hit = faces.flipped_turn(thumbs_of(imgs), PLAN)
+    assert hit is not None and hit[0] in (2, 3)
+    assert hit[2] <= faces.FLIP_MATCH_MAX and hit[3] >= faces.FLIP_ASYMMETRY_MIN
+
+
+def test_a_live_turn_is_not_called_flipped():
+    bg = backdrop()
+    # The head turns and the hand-held phone drifts a few pixels between steps.
+    imgs = [shot(bg), shot(bg, shift=3), shot(bg, head_x=255, shade=150, shift=6),
+            shot(bg, head_x=258, shade=148, shift=7), shot(bg, shift=-4), shot(bg, shift=-5)]
+    assert faces.flipped_turn(thumbs_of(imgs), PLAN) is None
+
+
+def test_a_plain_background_cannot_tell_and_is_left_alone():
+    bg = backdrop(plain=True)
+    other_side = shot(bg, head_x=225, shade=150)
+    imgs = [shot(bg), shot(bg), cv2.flip(other_side, 1), cv2.flip(other_side, 1), shot(bg), shot(bg)]
+    assert faces.flipped_turn(thumbs_of(imgs), PLAN) is None
+
+
+# ---------------------------------------------------------------------------
+# verify_burst: what runs on which frame (models replaced by fakes)
+# ---------------------------------------------------------------------------
+
+def enc(img):
+    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes()
+
+
+@pytest.fixture
+def engine(monkeypatch):
+    seen = {"light": [], "scored": 0}
+
+    def analyse(img, light=False):
+        seen["light"].append(light)
+        return FrameAnalysis(ok=True)
+    monkeypatch.setattr(faces, "analyse_frame", analyse)
+    monkeypatch.setattr(faces, "get_blink_model", lambda: object())
+
+    def scores(img):
+        seen["scored"] += 1
+        return (0.7, 0.6) if seen["scored"] == 1 else (0.1, 0.1)
+    monkeypatch.setattr(faces, "blink_scores", scores)
+    monkeypatch.setattr(faces, "antispoof_scores", lambda images, analyses, idx: {"frames": list(idx)})
+
+    def judge(analyses, challenge, template, **kw):
+        seen["kw"] = kw
+        return faces.VerifyResult("pass", None, "ok")
+    monkeypatch.setattr(faces, "judge_burst", judge)
+    return seen
+
+
+def live_images(n=6):
+    bg = backdrop()
+    return [enc(shot(bg, shift=i)) for i in range(n)]
+
+
+def test_v2_runs_light_analysis_and_scores_the_blink_with_mediapipe(engine):
+    plan = Challenge(LIVENESS_V2, (POSE_CENTRE, POSE_BLINK, POSE_LEFT))
+    faces.verify_burst(live_images(), plan, [])
+    assert engine["light"] == [False, True, True, True, True, True]   # first centre frame at full size
+    assert engine["kw"]["blink"] == {"closed": (0.7, 0.6), "opened": (0.1, 0.1)}
+    assert engine["kw"]["antispoof"] == {"frames": [0, 1]}
+
+
+def test_without_mediapipe_every_frame_gets_the_landmarks(engine, monkeypatch):
+    monkeypatch.setattr(faces, "get_blink_model", lambda: None)
+    faces.verify_burst(live_images(), PLAN, [])
+    assert engine["light"] == [False] * 6 and "blink" not in engine["kw"]
+
+
+def test_v1_is_analysed_as_before(engine):
+    faces.verify_burst(live_images(), ["centre", "turn", "other"], [])
+    assert engine["light"] == [False] * 6 and "blink" not in engine["kw"] and "antispoof" not in engine["kw"]
+
+
+def test_a_flipped_turn_is_refused_before_any_face_work(engine):
+    bg = backdrop()
+    centre, other_side = shot(bg), shot(bg, head_x=225, shade=150)
+    imgs = [centre, shot(bg, shift=2), cv2.flip(other_side, 1), cv2.flip(other_side, 1), centre, shot(bg, shift=-2)]
+    res = faces.verify_burst([enc(i) for i in imgs], PLAN, [])
+    assert res.verdict == "fail" and res.fail_code == "MIRRORED_FRAMES" and "flipped_turn" in res.detail
+    assert engine["light"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -538,11 +789,22 @@ def test_pilot_list(monkeypatch, pilot, expected):
     assert marking.liveness_protocol(7) == expected
 
 
-def test_flash_switch(monkeypatch):
+def test_the_flash_is_off_by_default(monkeypatch):
     settings(monkeypatch)
-    assert marking.flash_enabled()
+    assert not marking.flash_enabled()
     settings(monkeypatch, flash_enabled="0")
     assert not marking.flash_enabled()
+    settings(monkeypatch, flash_enabled="1")
+    assert marking.flash_enabled()
+
+
+def test_thresholds_read_the_new_settings(monkeypatch):
+    monkeypatch.setattr(marking, "get_float_setting", lambda k, d: {"review_skip_match": 0.7}.get(k, d))
+    th = marking.thresholds()
+    assert th["review_skip_match"] == 0.7
+    assert th["blink_closed_min"] == faces.DEFAULT_BLINK_CLOSED_MIN
+    assert th["blink_open_max"] == faces.DEFAULT_BLINK_OPEN_MAX
+    assert th["blink_min_diff"] == faces.DEFAULT_BLINK_MIN_DIFF
 
 
 # --- /api/mark/challenge routes by protocol, and v1's response is unchanged ---
@@ -568,7 +830,7 @@ def issuing(monkeypatch):
     main.app.dependency_overrides.clear()
 
 
-def challenge_response(monkeypatch, protocol, flash=True):
+def challenge_response(monkeypatch, protocol, flash=False):
     monkeypatch.setattr(marking, "liveness_protocol", lambda sid: protocol)
     monkeypatch.setattr(marking, "flash_enabled", lambda: flash)
     return TestClient(main.app).post("/api/mark/challenge").json()
@@ -585,14 +847,16 @@ def test_v1_challenge_response_and_storage_are_as_before(issuing, monkeypatch):
 def test_v2_challenge_response(issuing, monkeypatch):
     body = challenge_response(monkeypatch, 2)
     plan = parse_challenge_spec(issuing["spec"])
-    assert plan.protocol == 2 and list(plan.steps) == body["challenge"]
-    assert body["frame_counts"] == plan.frame_counts()
-    assert body["flash"]["colors"] == ["#%02x%02x%02x" % rgb for rgb in plan.flash_rgb()]
-    assert body["flash"]["durations_ms"] == list(plan.flash_ms)
-    assert body["prompts"]["left"] == "Turn your head to your LEFT"
-    assert body["prompts"]["right"] == "Turn your head to your RIGHT"
-    no_flash = challenge_response(monkeypatch, 2, flash=False)
-    assert "flash" not in no_flash and no_flash["frame_counts"] == [2, 2, 2, 2]
+    assert plan.protocol == 2 and list(plan.steps) == body["challenge"] and len(body["challenge"]) == 3
+    assert body["frame_counts"] == [2, 2, 2] and "flash" not in body
+    side = next(s for s in body["challenge"] if s in ("left", "right"))
+    assert body["prompts"][side] == {"left": "Turn your head to your LEFT", "right": "Turn your head to your RIGHT"}[side]
+    assert body["prompts"]["blink"] == "Look at the camera and blink slowly"
+    with_flash = challenge_response(monkeypatch, 2, flash=True)
+    plan = parse_challenge_spec(issuing["spec"])
+    assert len(with_flash["challenge"]) == 4 and with_flash["frame_counts"] == plan.frame_counts()
+    assert with_flash["flash"]["colors"] == ["#%02x%02x%02x" % rgb for rgb in plan.flash_rgb()]
+    assert with_flash["flash"]["durations_ms"] == list(plan.flash_ms)
 
 
 # --- /api/mark takes its frame count and judgement from the stored plan ---
@@ -602,7 +866,7 @@ def jpeg(seed):
     return cv2.imencode(".jpg", img)[1].tobytes()
 
 
-def test_mark_expects_the_v2_frame_count_and_judges_with_the_plan(monkeypatch):
+def test_mark_expects_six_frames_and_judges_with_the_plan(monkeypatch):
     main.app.dependency_overrides[main.current_student] = lambda: ME
     row = {"id": 55, "challenge": PLAN.spec(), "steps": list(PLAN.steps), "plan": PLAN, "device_id": 3}
     monkeypatch.setattr(main, "_mark_gates", lambda *a, **k: ({"id": 3}, False, dict(row)))
@@ -619,14 +883,13 @@ def test_mark_expects_the_v2_frame_count_and_judges_with_the_plan(monkeypatch):
     monkeypatch.setattr(main, "_settle_mark", lambda me, **k: {"ok": True})
     client = TestClient(main.app, raise_server_exceptions=False)
     try:
-        n = sum(PLAN.frame_counts())
         files = [("frames", (f"f{i}.jpg", jpeg(i), "image/jpeg")) for i in range(8)]
         r = client.post("/api/mark", data={"token": "t"}, files=files)
         assert r.status_code == 400 and r.json()["code"] == "FRAME_COUNT"
-        files = [("frames", (f"f{i}.jpg", jpeg(i), "image/jpeg")) for i in range(n)]
+        files = [("frames", (f"f{i}.jpg", jpeg(i), "image/jpeg")) for i in range(6)]
         r = client.post("/api/mark", data={"token": "t"}, files=files)
         assert r.status_code == 200, r.text
-        assert judged == {"n": n, "plan": PLAN}
+        assert judged == {"n": 6, "plan": PLAN}
     finally:
         main.app.dependency_overrides.clear()
 
@@ -636,6 +899,7 @@ def test_mark_expects_the_v2_frame_count_and_judges_with_the_plan(monkeypatch):
 @pytest.mark.parametrize("key,value,stored", [
     ("liveness_v2", "1", "1"), ("liveness_v2_students", '[12, "40", 12]', "[12, 40]"),
     ("liveness_v2_students", "", "[]"), ("flash_min_correlation", "0.8", "0.8"), ("flash_enabled", "0", "0"),
+    ("review_skip_match", "0.7", "0.7"), ("blink_closed_min", "0.5", "0.5"), ("blink_min_diff", " 0.3 ", "0.3"),
 ])
 def test_settings_are_normalised(key, value, stored):
     assert main._valid_setting(key, value) == stored
@@ -643,7 +907,8 @@ def test_settings_are_normalised(key, value, stored):
 
 @pytest.mark.parametrize("key,value", [
     ("liveness_v2", "yes"), ("liveness_v2_students", "12, 40"), ("liveness_v2_students", '{"a": 1}'),
-    ("flash_min_signal", "lots"), ("antispoof_review_threshold", "2"),
+    ("flash_min_signal", "lots"), ("antispoof_review_threshold", "2"), ("review_skip_match", "1.5"),
+    ("blink_open_max", "open"),
 ])
 def test_bad_settings_are_refused(key, value):
     with pytest.raises(marking.MarkError):

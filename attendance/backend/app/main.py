@@ -265,7 +265,7 @@ def _prompt_for(pose: str) -> str:
         faces.POSE_OTHER: "Now turn your head to the OTHER side",
         faces.POSE_LEFT: "Turn your head to your LEFT",
         faces.POSE_RIGHT: "Turn your head to your RIGHT",
-        faces.POSE_BLINK: "Look at the camera and blink",
+        faces.POSE_BLINK: "Look at the camera and blink slowly",
         faces.POSE_FLASH: "Hold still while the screen changes colour",
     }.get(pose, "Look at the camera")
 
@@ -1091,6 +1091,7 @@ def admin_set_setting(
         # liveness v2 (faces.py "Liveness v2"; RUNBOOK "Liveness v2")
         "liveness_v2", "liveness_v2_students", "flash_enabled",
         "flash_min_signal", "flash_min_correlation", "antispoof_review_threshold",
+        "blink_closed_min", "blink_open_max", "blink_min_diff", "review_skip_match",
     }
     if key not in allowed:
         raise MarkError(400, "BAD_SETTING", "Unknown setting.")
@@ -1129,7 +1130,8 @@ def _valid_setting(key: str, value: str) -> str:
         except (TypeError, ValueError):
             raise MarkError(400, "BAD_VALUE", "Give a JSON list of student ids, e.g. [12, 40].") from None
         value = json.dumps(ids)
-    elif key in ("flash_min_signal", "flash_min_correlation", "antispoof_review_threshold"):
+    elif key in ("flash_min_signal", "flash_min_correlation", "antispoof_review_threshold",
+                 "blink_closed_min", "blink_open_max", "blink_min_diff", "review_skip_match"):
         try:
             number = float(value)
         except ValueError:

@@ -4,11 +4,11 @@
  * everyone else; the server says which in netcheck and in each challenge.
  *
  * What the student does: look straight, then — in the server's random order —
- * turn to THEIR left, turn to their right, blink, and hold still while the
- * screen flashes a few colours. Each step is captured automatically, only once
- * the pose is actually held, which is what the first production failures
- * lacked: every POSE_CHALLENGE_FAILED had a frame taken while the head was
- * still moving.
+ * turn their head to THEIR left OR right (the server names one) and blink.
+ * (A colour-flash step exists but is off unless att_settings flash_enabled=1.)
+ * Each step is captured automatically, only once the pose is actually held,
+ * which is what the first production failures lacked: every
+ * POSE_CHALLENGE_FAILED had a frame taken while the head was still moving.
  *
  * Tracker: Google MediaPipe Face Landmarker (@mediapipe/tasks-vision 0.10.35,
  * Apache-2.0), vendored under public/vendor/mediapipe/ — no CDN at runtime, and
@@ -51,7 +51,20 @@
   const OFF_CENTRE = 0.2;         // face centre this far from the frame centre
   const DARK_LUMA = 55;           // mean luma; the server refuses below 40
   const SHARP_MIN = 35;           // whole-frame Laplacian variance; the server refuses below 25
-  const BLINK_SHUT = 0.55, BLINK_RISE = 0.30, BLINK_OPEN = 0.40;
+  // Blink, on MediaPipe's eyeBlink blendshapes (0 open .. 1 shut). The server
+  // re-scores the two uploaded frames with the same model and wants: shut >=
+  // 0.45, open <= 0.40, and 0.25 apart (faces.py "blink"). The phone asks for
+  // a little more, per eye too, and relative to this student's own open eyes.
+  // Looking down at the screen also lifts the scores (pilot attempt #41 took
+  // that for a blink): it is told apart by time — a blink, even a slow one, is
+  // over within about a second; reading the screen is not.
+  const BLINK_SHUT = 0.50;        // mean of both eyes, and...
+  const BLINK_SHUT_EYE = 0.40;    // ...each eye at least this
+  const BLINK_RISE = 0.30;        // ...and this far above the student's own open eyes
+  const BLINK_MAX_MS = 1200;      // shut for longer: not a blink — start again
+  const BLINK_OPEN = 0.34;        // the frame after: open again (server allows 0.40)
+  const BLINK_DROP = 0.28;        // ...and this far below the shut frame (server: 0.25)
+  const BLINK_BASE_MAX = 0.45;    // samples above this are not "open" for the baseline
   const NO_FACE_GIVEUP_MS = 15000;
   const STEP_GIVEUP_MS = 30000;
 
@@ -59,7 +72,7 @@
     centre: 'Look straight at the camera',
     left: 'Turn your head to your LEFT',
     right: 'Turn your head to your RIGHT',
-    blink: 'Look at the camera and blink',
+    blink: 'Look at the camera and blink slowly',
     flash: 'Hold still while the screen changes colour',
     up: 'Tilt your chin UP a little',
     down: 'Tilt your chin DOWN a little',
@@ -71,7 +84,10 @@
 
   const $ = (id) => document.getElementById(id);
   const reducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  // Diagnostics for a phone test: ?lvdebug=1 shows the live measurements in the
+  // frame; ?lvcpu=1 skips the GPU delegate (to compare speed, or rule it out).
   const debug = /[?&]lvdebug=1\b/.test(location.search);
+  const cpuOnly = /[?&]lvcpu=1\b/.test(location.search);
   function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
   function median(xs) {
     const s = xs.slice().sort((a, b) => a - b);
@@ -145,7 +161,7 @@
         fileset = simd
           ? { wasmLoaderPath: assets.simdJs, wasmBinaryPath: assets.simdWasm }
           : { wasmLoaderPath: assets.nosimdJs, wasmBinaryPath: assets.nosimdWasm };
-        for (const delegate of ['GPU', 'CPU']) {
+        for (const delegate of (cpuOnly ? ['CPU'] : ['GPU', 'CPU'])) {
           try {
             landmarker = await createLandmarker(delegate);
             delegateUsed = delegate;
@@ -209,13 +225,13 @@
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
     }
-    let blink = 0;
     const cats = res.faceBlendshapes && res.faceBlendshapes[0] ? res.faceBlendshapes[0].categories : [];
-    let found = 0;
+    let blinkL = 0, blinkR = 0;
     for (const c of cats) {
-      if (c.categoryName === 'eyeBlinkLeft' || c.categoryName === 'eyeBlinkRight') { blink += c.score; found++; }
+      if (c.categoryName === 'eyeBlinkLeft') blinkL = c.score;
+      else if (c.categoryName === 'eyeBlinkRight') blinkR = c.score;
     }
-    blink = found ? blink / found : 0;
+    const blink = (blinkL + blinkR) / 2;
     return {
       face: true,
       turn: (off.x * axis.x + off.y * axis.y) / span,   // + = the student's LEFT
@@ -225,6 +241,7 @@
       cx: (minX + maxX) / 2,
       cy: (minY + maxY) / 2,
       blink,
+      blinkMin: Math.min(blinkL, blinkR),
     };
   }
 
@@ -564,9 +581,10 @@
   }
 
   /**
-   * A blink: the frame at the PEAK of the closing (eyes shut, as judged by
-   * MediaPipe's eyeBlink blendshapes, relative to this student's open eyes),
-   * then a frame once they are open again.
+   * A blink, slowly: the shut frame is the very picture the tracker scored
+   * shut — `snap`, the canvas detectForVideo just ran on, copied at the peak
+   * of the closure, never a later grab — then a frame once the eyes are open
+   * again. Both are re-scored on the server by the same model.
    */
   async function blinkStep(run) {
     const started = performance.now();
@@ -575,6 +593,7 @@
     let phase = 'ready';
     let peak = 0;
     let peakT = 0;
+    let closingT = 0;
     let closed = null;
     for (;;) {
       const m = await run.sample();
@@ -583,39 +602,53 @@
       if (f) {
         ui.state(f.state);
         ui.hint(f.msg);
-        if (phase !== 'ready') { phase = 'ready'; closed = null; }
+        if (phase !== 'ready') { phase = 'ready'; closed = null; ui.hold(0); }
         continue;
       }
       ui.state('ok');
       const b0 = base.length ? median(base) : m.blink;
+      const shut = m.blink >= Math.max(BLINK_SHUT, b0 + BLINK_RISE) && m.blinkMin >= BLINK_SHUT_EYE;
       if (phase === 'ready') {
-        if (m.blink < BLINK_OPEN || base.length < 4) {
+        if (m.blink < BLINK_BASE_MAX) {
           base.push(m.blink);
           if (base.length > 12) base = base.slice(-12);
         }
-        if (base.length >= 4 && m.blink >= Math.max(BLINK_SHUT, b0 + BLINK_RISE)) {
+        if (base.length >= 3 && shut) {
           phase = 'closing';
-          peak = m.blink; peakT = m.t;
+          peak = m.blink; peakT = m.t; closingT = m.t;
           run.copy(peakCanvas);
+          ui.hold(0.4);
         } else {
-          ui.hint(m.t - started > 5000 ? 'Close your eyes fully for a moment, then open them' : 'Blink once');
+          ui.hint(m.t - started > 5000 ? 'Close your eyes fully for a moment, then open them' : 'Blink slowly');
         }
       } else if (phase === 'closing') {
-        if (m.blink > peak) {
+        // Keep the most-shut picture of this closure.
+        if (shut && m.blink > peak) {
           peak = m.blink; peakT = m.t;
           run.copy(peakCanvas);
-        } else if (m.blink < peak - 0.08 || m.t - peakT > 160) {
+        }
+        if (shut && m.t - closingT > BLINK_MAX_MS) {
+          // Too long to be a blink: eyes kept down (reading the screen?).
+          phase = 'ready'; ui.hold(0);
+          ui.hint('Look at the camera, then blink');
+        } else if (!shut) {
           closed = encodeCanvas(peakCanvas);
           phase = 'opening';
-          ui.hold(0.5);
+          ui.hold(0.7);
+          ui.hint('Now open your eyes');
         }
       } else if (phase === 'opening') {
-        if (m.blink <= Math.max(BLINK_OPEN, b0 + 0.12) && m.t - peakT >= 150) {
+        const reopened = m.blink <= peak - BLINK_DROP
+          && (m.blink <= BLINK_OPEN
+              // Some open eyes never score that low (looking down at the
+              // phone): after a moment, back to their own normal will do and
+              // the server decides.
+              || (m.t - peakT > 1200 && m.blink <= b0 + 0.08));
+        if (reopened) {
           ui.hold(1);
           return [closed, run.keep()];
         }
         if (m.t - peakT > 4000) { phase = 'ready'; closed = null; ui.hold(0); }
-        else ui.hint('Now open your eyes');
       }
     }
   }
@@ -717,7 +750,7 @@
         ui.cue(null);
         buzz(35);
         ui.hint('');
-        await wait(200);
+        await wait(120);
       }
       return await Promise.all(frames);
     } finally {
@@ -777,7 +810,7 @@
           ui.say('When the count ends, close your eyes, count to two, then open them');
           await countdown(3);
           ui.say('Eyes closed…');
-          await wait(800); check();
+          await wait(1000); check();
           frames.push(grab());
           ui.say('Open your eyes');
           await wait(2000); check();
