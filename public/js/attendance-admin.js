@@ -108,6 +108,17 @@
     modal.classList.remove('hidden');
     // Every stored frame: a marking burst is 2 per challenge step (up to 8),
     // an enrollment capture up to 20. The endpoint 404s past the last one.
+    // Shown as data: URLs, not blob: ones. Production's nginx sends
+    // `Content-Security-Policy: default-src https: data: ...`, which has no
+    // blob: — so <img src="blob:..."> was silently refused and every frame
+    // came out blank, although each one had downloaded fine. A page cannot
+    // loosen a server-set policy, but data: is already allowed.
+    const toDataUrl = (blob) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
     const imgs = [];
     for (let i = 0; i < 24; i++) {
       const res = await fetch(API + encodeURIComponent(`/admin/frame?dir=${dir}&index=${i}`), {
@@ -115,7 +126,7 @@
         headers: { Authorization: 'Bearer ' + ticket },
       });
       if (!res.ok) break;
-      imgs.push(URL.createObjectURL(await res.blob()));
+      imgs.push(await toDataUrl(await res.blob()));
     }
     body.innerHTML = imgs.length
       ? imgs.map((u) => `<img src="${u}" class="aspect-[3/4] w-full rounded-lg bg-gray-100 object-cover ring-1 ring-gray-200">`).join('')
