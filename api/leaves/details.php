@@ -99,12 +99,21 @@ function formatApprovalChain($chain) {
         $statusClass = '';
         $icon = '';
 
-        if ($step['status'] === 'approved') {
+        if (!empty($step['outcome']) && $step['status'] === 'cancelled') {
+            $statusClass = 'border-gray-500 bg-gray-100';
+            $icon = '<i class="fas fa-ban text-gray-600"></i>';
+        } elseif (!empty($step['outcome']) && $step['status'] === 'combined') {
+            $statusClass = 'border-violet-500 bg-violet-50';
+            $icon = '<i class="fas fa-compress-arrows-alt text-violet-600"></i>';
+        } elseif ($step['status'] === 'approved') {
             $statusClass = 'border-green-500 bg-green-50';
             $icon = '<i class="fas fa-check-circle text-green-600"></i>';
         } elseif ($step['status'] === 'rejected') {
             $statusClass = 'border-red-500 bg-red-50';
             $icon = '<i class="fas fa-times-circle text-red-600"></i>';
+        } elseif (!empty($step['not_reached'])) {
+            $statusClass = 'border-gray-200 bg-white opacity-70';
+            $icon = '<i class="fas fa-minus-circle text-gray-300"></i>';
         } else {
             $statusClass = 'border-gray-300 bg-gray-50';
             $icon = '<i class="fas fa-clock text-gray-400"></i>';
@@ -115,6 +124,9 @@ function formatApprovalChain($chain) {
         $html .= '<div class="flex items-center">';
         $html .= $icon;
         $html .= '<span class="ml-2 font-semibold">' . detailsHtml($step['stage']) . '</span>';
+        if (!empty($step['not_reached'])) {
+            $html .= '<span class="ml-2 text-xs text-gray-400">Not reached</span>';
+        }
         $html .= '</div>';
 
         if ($step['status'] !== 'pending' && !empty($step['approved_at'])) {
@@ -123,12 +135,22 @@ function formatApprovalChain($chain) {
 
         $html .= '</div>';
 
-        if (!empty($step['approver_name'])) {
-            $html .= '<p class="text-sm text-gray-700">By: ' . detailsHtml($step['approver_name']) . '</p>';
-        }
+        if (!empty($step['outcome'])) {
+            $verb = $step['status'] === 'combined' ? 'Combined by' : 'Cancelled by';
+            $html .= '<p class="text-sm text-gray-700">' . $verb . ': <span class="font-medium">' . detailsHtml($step['approver_name']) . '</span></p>';
+            $html .= '<p class="text-sm text-gray-700 mt-1">' . ($step['status'] === 'combined' ? 'Note' : 'Reason') . ': '
+                . (!empty($step['remarks'])
+                    ? '<span class="italic">"' . detailsHtml($step['remarks'], true) . '"</span>'
+                    : '<span class="text-gray-400">not recorded</span>')
+                . '</p>';
+        } else {
+            if (!empty($step['approver_name']) && empty($step['not_reached'])) {
+                $html .= '<p class="text-sm text-gray-700">By: ' . detailsHtml($step['approver_name']) . '</p>';
+            }
 
-        if (!empty($step['remarks'])) {
-            $html .= '<p class="text-sm text-gray-600 mt-2 italic">"' . detailsHtml($step['remarks'], true) . '"</p>';
+            if (!empty($step['remarks'])) {
+                $html .= '<p class="text-sm text-gray-600 mt-2 italic">"' . detailsHtml($step['remarks'], true) . '"</p>';
+            }
         }
 
         if ($step['stage'] === 'TA Coordinator' && !empty($step['no_duty_confirmed'])) {

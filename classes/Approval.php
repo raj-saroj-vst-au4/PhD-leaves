@@ -788,6 +788,23 @@ class Approval {
                 ];
             }
 
+            // A leave that ended outside the approval stages — cancelled, or
+            // merged into a combined leave — gets a closing entry saying who
+            // ended it, when and why. Without it the view showed only a bare
+            // "Cancelled" badge above stages still marked pending.
+            $outcome = $this->outcomeEntry($leave);
+            if (in_array($leave['status'], ['cancelled', 'combined', 'rejected'], true)) {
+                foreach ($approvalChain as &$step) {
+                    if ($step['status'] === 'pending' || $step['status'] === null) {
+                        $step['not_reached'] = true;
+                    }
+                }
+                unset($step);
+            }
+            if ($outcome !== null) {
+                $approvalChain[] = $outcome;
+            }
+
             return [
                 'success' => true,
                 'leave_id' => $leaveId,
@@ -799,6 +816,75 @@ class Approval {
             logError("Failed to get approval chain: " . $e->getMessage());
             throw new Exception("Failed to retrieve approval history");
         }
+    }
+
+    /**
+     * The closing entry for a cancelled or combined leave: who, when and why.
+     *
+     * Who comes from the audit log (system_logs, by "Ref ID"). Entries written
+     * before 2026-09 recorded the STUDENT as the actor of an admin's
+     * cancellation or combine (since fixed), so an actor who is the student
+     * on an admin-only action is shown as "the office" rather than misnamed.
+     */
+    private function outcomeEntry(array $leave) {
+        $status = $leave['status'];
+        if ($status !== 'cancelled' && $status !== 'combined') {
+            return null;
+        }
+        $leaveId = (int) $leave['id'];
+
+        if ($status === 'cancelled') {
+            $stmt = $this->db->prepare(
+                "SELECT sl.user_id, sl.action, sl.created_at, u.name, u.role
+                   FROM system_logs sl LEFT JOIN users u ON u.id = sl.user_id
+                  WHERE sl.action IN ('admin_cancelled', 'leave_cancelled_no_guide')
+                    AND sl.description REGEXP ?
+                  ORDER BY sl.id DESC LIMIT 1");
+            $stmt->execute(['Ref ID: ' . $leaveId . '([^0-9]|$)']);
+            $log = $stmt->fetch() ?: null;
+            $reason = trim((string) ($leave['admin_remarks'] ?? ''));
+            $stage = 'Cancelled';
+        } else {
+            $successor = !empty($leave['combined_into_id']) ? (int) $leave['combined_into_id'] : null;
+            if ($successor === null && preg_match_all('/Combined into leave #(\d+)/', (string) $leave['admin_remarks'], $m)) {
+                $successor = (int) end($m[1]);
+            }
+            $log = null;
+            if ($successor !== null) {
+                $stmt = $this->db->prepare(
+                    "SELECT sl.user_id, sl.action, sl.created_at, u.name, u.role
+                       FROM system_logs sl LEFT JOIN users u ON u.id = sl.user_id
+                      WHERE sl.action = 'leaves_combined' AND sl.description REGEXP ?
+                      ORDER BY sl.id DESC LIMIT 1");
+                $stmt->execute(['combined into leave #' . $successor . '([^0-9]|$)']);
+                $log = $stmt->fetch() ?: null;
+            }
+            $reason = $successor !== null
+                ? "Combined with the adjacent leave(s) into leave application #$successor, which now carries these days."
+                : 'Combined into another leave application.';
+            $stage = 'Combined';
+        }
+
+        // Only the office cancels or combines. The student as actor is the old
+        // logging bug; no log at all predates the audit trail.
+        if ($log && !empty($log['name']) && (int) $log['user_id'] !== (int) $leave['user_id']) {
+            $who = $log['name'] . ' (' . ucfirst((string) $log['role']) . ')';
+        } elseif ($log && $log['action'] === 'leave_cancelled_no_guide') {
+            $who = 'Automatically, after a guide/TA change request was decided';
+        } else {
+            $who = 'The office (admin)';
+        }
+
+        return [
+            'stage' => $stage,
+            'approver_name' => $who,
+            'approver_email' => null,
+            'status' => $status,
+            'remarks' => $reason !== '' ? $reason : null,
+            'approved_at' => $log['created_at'] ?? ($leave['updated_at'] ?? null),
+            'outcome' => true,
+            'order' => 9
+        ];
     }
 
     /**
