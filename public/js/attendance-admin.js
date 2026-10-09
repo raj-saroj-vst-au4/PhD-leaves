@@ -430,6 +430,10 @@
             <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="strict_mode" ${s.strict_mode === '1' ? 'checked' : ''}>
           </div>
           <div class="flex items-start gap-3 py-3 text-sm">
+            <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Only from the enrolled phone</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">Off: students can mark from any phone or browser on the office WiFi (the face and liveness check still apply). On: only the phone they enrolled with, so a lost cookie (private tab, other browser, new phone) means re-enrolling.</p></div>
+            <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="require_enrolled_device" ${s.require_enrolled_device !== '0' ? 'checked' : ''}>
+          </div>
+          <div class="flex items-start gap-3 py-3 text-sm">
             <div class="min-w-0 flex-1"><p class="font-medium text-gray-900">Liveness v2 for everyone</p><p class="mt-0.5 text-xs leading-relaxed text-gray-500">One named head turn (left or right) and a blink, instead of the original turn-either-way check. Off: only the pilot students below get it.</p></div>
             <input type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" data-toggle="liveness_v2" ${s.liveness_v2 === '1' ? 'checked' : ''}>
           </div>

@@ -22,8 +22,8 @@ $steps = [
     [
         'img'   => '01-sign-in-dashboard.jpg',
         'title' => 'Sign in to the portal on your phone',
-        'body'  => 'Open <strong>www.som.iitb.ac.in/phdtimeoff</strong> in Safari (iPhone) or Chrome (Android) on the phone you will use for attendance, and sign in with your IITB email and portal password. You land on your dashboard.',
-        'tip'   => 'Use your own phone — the phone you enroll with becomes your attendance device.',
+        'body'  => 'Open <strong>www.som.iitb.ac.in/phdtimeoff</strong> in Safari (iPhone) or Chrome (Android) on your phone, and sign in with your IITB email and portal password. You land on your dashboard.',
+        'tip'   => 'You enroll once. After that you can mark attendance from this phone or any other phone or browser — just sign in on the office WiFi.',
     ],
     [
         'img'   => '02-menu-attendance.jpg',
@@ -64,7 +64,7 @@ $steps = [
     [
         'img'   => '06-enrolled.jpg',
         'title' => 'You’re enrolled',
-        'body'  => 'You’ll see <strong>“Enrollment complete. This phone is now your attendance device.”</strong> The amber <em>Enrollment pending</em> badge disappears and the enrollment box is gone. That’s it — you only do this once.',
+        'body'  => 'You’ll see <strong>“You’re enrolled”</strong>. The amber <em>Enrollment pending</em> badge disappears and the enrollment box is gone. That’s it — you only do this once.',
     ],
     [
         'img'   => '07-mark-attendance.jpg',
@@ -100,7 +100,7 @@ $faq = [
     ],
     [
         'q' => 'It says “This phone is not your enrolled device”',
-        'a' => 'Attendance can only be marked from the phone you enrolled with. If you have changed or reset your phone, visit the office to enroll again with the new one.',
+        'a' => 'Normally you can mark from any phone or browser. You only see this when the office has limited marking to the phone you enrolled with — use that phone in the same browser, or visit the office to enroll again if you have changed it.',
     ],
 ];
 ?>
@@ -171,7 +171,7 @@ $faq = [
             </div>
             <ul class="card-body grid gap-3 sm:grid-cols-2">
                 <?php foreach ([
-                    ['fa-mobile-alt', 'Your own phone', 'It becomes your attendance device — you will mark attendance from it every day.'],
+                    ['fa-mobile-alt', 'A phone with a camera', 'Your own phone is easiest. Later you can mark attendance from it or any other phone.'],
                     ['fa-wifi', 'SOM office WiFi', 'Be in the SOM office and connected to its WiFi. Enrollment does not work elsewhere.'],
                     ['fa-key', 'Your portal sign-in', 'Your IITB email and portal password (from your invitation email).'],
                     ['fa-user-tie', 'A code from the office', 'Office staff give you a one-time 6-digit enrollment code.'],

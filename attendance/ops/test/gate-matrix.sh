@@ -8,6 +8,9 @@
 #   BASE=https://devlinux.som.iitb.ac.in/phdtimeoff/attendance/api \
 #   TICKET=<student ticket>  DEVICE_COOKIE=<att_device value>  ./gate-matrix.sh
 #
+# Set REQUIRE_DEVICE=1 when att_settings require_enrolled_device is '1'; the
+# device-gate row only applies then (with it '0', any browser may mark).
+#
 # Get TICKET from a logged-in browser (att-root data-ticket attribute) and
 # DEVICE_COOKIE from browser devtools after enrolling the test phone.
 # ============================================================================
@@ -15,6 +18,7 @@ set -u
 BASE="${BASE:-http://127.0.0.1:3070/api}"
 TICKET="${TICKET:-}"
 DEVICE_COOKIE="${DEVICE_COOKIE:-}"
+REQUIRE_DEVICE="${REQUIRE_DEVICE:-0}"
 PASS=0; FAIL=0
 
 check() {
@@ -43,7 +47,11 @@ echo "== network gate =="
 check "spoofed X-Client-IP -> 403 IP_NOT_ALLOWED" 403 IP_NOT_ALLOWED   -X POST "$BASE/mark/challenge" "${AUTH[@]}" "${COOKIE[@]}" -H "X-Client-IP: 10.119.4.27"
 
 echo "== device gate (run from an allowed IP) =="
-check "no device cookie -> 401 DEVICE_NOT_ENROLLED" 401 DEVICE_NOT_ENROLLED -X POST "$BASE/mark/challenge" "${AUTH[@]}"
+if [ "$REQUIRE_DEVICE" = "1" ]; then
+    check "no device cookie -> 401 DEVICE_NOT_ENROLLED" 401 DEVICE_NOT_ENROLLED -X POST "$BASE/mark/challenge" "${AUTH[@]}"
+else
+    echo "SKIP  device gate off (require_enrolled_device=0): any browser may mark"
+fi
 
 echo "== enrollment WiFi gate (leaked OTP can't enroll remotely) =="
 check "enroll off-wifi -> 403 IP_NOT_ALLOWED" 403 IP_NOT_ALLOWED \
@@ -64,7 +72,8 @@ cat <<'EOF'
   - after cutoff:        set today's override end in the past -> Mark => 403 OUTSIDE_WINDOW
   - non-working day:     override working=no                  -> Mark => 403 NON_WORKING_DAY
   - second mark:         mark once, mark again                -> 409 ALREADY_MARKED
-  - revoked device:      admin revoke, then Mark              -> 401 DEVICE_REVOKED
+  - revoked device:      admin revoke, then Mark              -> 401 DEVICE_REVOKED (require_enrolled_device=1)
+  - other browser:       private tab / 2nd phone, then Mark   -> 401 DEVICE_NOT_ENROLLED if =1; marks normally if =0
   - printed photo:       hold a photo up                      -> 422 (LIVENESS/POSE fail) + evidence stored
   - phone-screen photo:  photo of the student on 2nd phone    -> 422 + evidence stored
   - wrong face:          friend marks on your account         -> 422 CROSSMATCH + office sees who

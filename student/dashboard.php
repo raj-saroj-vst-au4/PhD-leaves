@@ -182,7 +182,7 @@ $guideUrl = BASE_URL . '/attendance-guide.php';
                 <p class="mt-1 text-lg font-semibold">You haven't marked your attendance yet</p>
                 <p class="mt-1 text-sm text-blue-50">
                     <?php if ($attToday['open_now']): ?>
-                        Marking is open until <?php echo $attToday['end']; ?> &mdash; on the SOM office WiFi, from your enrolled phone.
+                        Marking is open until <?php echo $attToday['end']; ?> &mdash; on the SOM office WiFi.
                     <?php else: ?>
                         Marking opens at <?php echo $attToday['start']; ?> and closes at <?php echo $attToday['end']; ?>.
                     <?php endif; ?>

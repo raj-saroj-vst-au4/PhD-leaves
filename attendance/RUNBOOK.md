@@ -15,7 +15,18 @@ trust each other through short-lived HMAC tickets.
    enrollment** — a leaked enrollment OTP is useless off the office WiFi.
 3. **Time** — server clock inside today's window (per-weekday default, per-date
    override, holiday calendar, emergency extension). IST throughout.
-4. **Device** — the `att_device` cookie matches the phone bound at enrollment.
+4. **Device** — only when `require_enrolled_device` = `1`: the `att_device`
+   cookie matches the phone bound at enrollment. **Off on production since
+   Oct 2026** (any phone or browser may mark): the cookie was lost too often —
+   private tabs, a second browser or Safari profile, in-app browsers, cleared
+   site data, new phones — and each loss meant an office re-enrollment. With it
+   off, a bound device is still recorded on the attempt and record when the
+   cookie is present; a challenge issued to a bound device must still be
+   answered from it (`DEVICE_MISMATCH`). Enrollment still binds the phone, so
+   switching it back on (Configuration → Modes → *Only from the enrolled
+   phone*) needs no re-enrollment. The trade-off: someone holding a student's
+   password and a recorded video is no longer stopped by a device check — the
+   WiFi, window, face match, cross-match, liveness and review still apply.
 5. **Strict code** (optional) — rotating 6-digit office-screen code.
 6. **Not already marked / attempt budget.** The budget (`max_attempts_per_day`)
    counts failed attempts **and results sent to review**, and is claimed
@@ -33,7 +44,8 @@ trust each other through short-lived HMAC tickets.
      CSPRNG per attempt: *centre*, a *turn* to either side, and a turn to the
      *other* side. Sides are never named (left/right was mis-scored in
      production); "other" is checked as the opposite sign within the burst. It
-     is bound to a single-use token for this student and phone, expires after
+     is bound to a single-use token for this student (and phone, when one is
+   bound — see gate 4), expires after
      2 minutes, and a burst that arrives faster than the steps can be performed
      is refused (`CHALLENGE_TOO_FAST`). Issue is capped at 4 a minute and
      3 × the attempt budget a day (`TOO_MANY_CHALLENGES`), so a client cannot
@@ -62,7 +74,8 @@ trust each other through short-lived HMAC tickets.
      phone's uploads are just JPEGs, and someone holding a few photos of the
      student at different angles (slightly re-cropped each time) can assemble
      a burst for any of the 10 sequences. Against that the real controls are
-     the others in this list: the bound phone, the office WiFi and time window,
+     the others in this list: the bound phone (if gate 4 is on), the office
+     WiFi and time window,
      identity and cross-match on every frame, office review of the stored
      evidence — and strict mode, which requires physical presence at the
      office screen.
@@ -167,6 +180,7 @@ v2 who was enrolled with the ring sweep does not need to re-enroll.
 | `antispoof_review_threshold` | 0.90 | MiniFASNet spoof probability that counts as a soft doubt |
 | `flash_enabled` | 0 | `1` adds the colour flash step back |
 | `flash_min_signal` / `flash_min_correlation` | 0.008 / 0.75 | flash judging, only if it is on |
+| `require_enrolled_device` | 1 if the row is missing; the 2026_10_09 migration seeds 0 | `1` limits marking to the phone bound at enrollment (gate 4) |
 
 Calibrate on the pilot account: mark a few times, then read the attempts —
 `SELECT id, verdict, fail_code, match_score, JSON_EXTRACT(detail,'$.review_reasons'), JSON_EXTRACT(detail,'$.review_skipped'), JSON_EXTRACT(detail,'$.steps') FROM att_attempts WHERE student_id=… ORDER BY id DESC LIMIT 5;`
@@ -332,13 +346,17 @@ sudo systemctl enable --now attendance-report.timer attendance-purge.timer atten
 - **Enroll a student** (in office): Attendance → Today → *enroll code* next to
   the name → read the one-time code to the student → they open **Attendance →
   One-time enrollment** on *their own phone*, **connected to the office WiFi**,
-  enter the code, follow the head-turn steps. That phone is now bound. Two
+  enter the code, follow the head-turn steps. That phone is now bound (it only
+  matters while `require_enrolled_device` is `1`; otherwise they can mark from
+  any phone or browser on the office WiFi). Two
   independent controls guard enrollment: the OTP (proves the office started it)
   and the office-WiFi source IP (proves the phone is physically here). A leaked
   code is useless off the office network, so no one can enroll a face remotely.
   Still confirm identity in person — that is the human trust anchor.
-- **Lost/changed phone**: *revoke* on their row (reason required), then issue a
-  fresh enroll code.
+- **Lost/changed phone**: nothing to do while `require_enrolled_device` is `0`
+  — they sign in on the new phone and mark. With it `1`: *revoke* on their row
+  (reason required), then issue a fresh enroll code. (Revoke also erases the
+  face template, so only use it when re-enrollment is really wanted.)
 - **Pending reviews**: Attendance → Reviews. Look at the photos, Approve
   (marks present) or Reject (reason required). Do it the same day.
 - **Someone couldn't mark (WiFi/power/server)**: Today → *Extend today* (reason
@@ -400,7 +418,8 @@ sudo systemctl enable --now attendance-report.timer attendance-purge.timer atten
   Failed attempts log the seen IP so you can read the new one off the audit tab.
 - **iOS**: students should use **Safari directly** (not an installed PWA) —
   iOS partitions storage, so a device cookie set in Safari is invisible inside
-  a home-screen web app. If a token is lost, re-enroll.
+  a home-screen web app. This only matters while `require_enrolled_device`
+  is `1`; then, if a token is lost, re-enroll.
 - **Face model didn't download at build**: mount a `/models` volume with the
   `buffalo_l` pack, or rebuild with network access.
 

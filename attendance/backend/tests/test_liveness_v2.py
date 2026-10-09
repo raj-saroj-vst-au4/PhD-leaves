@@ -900,6 +900,7 @@ def test_mark_expects_six_frames_and_judges_with_the_plan(monkeypatch):
     ("liveness_v2", "1", "1"), ("liveness_v2_students", '[12, "40", 12]', "[12, 40]"),
     ("liveness_v2_students", "", "[]"), ("flash_min_correlation", "0.8", "0.8"), ("flash_enabled", "0", "0"),
     ("review_skip_match", "0.7", "0.7"), ("blink_closed_min", "0.5", "0.5"), ("blink_min_diff", " 0.3 ", "0.3"),
+    ("require_enrolled_device", "0", "0"), ("require_enrolled_device", "1", "1"),
 ])
 def test_settings_are_normalised(key, value, stored):
     assert main._valid_setting(key, value) == stored
@@ -908,7 +909,7 @@ def test_settings_are_normalised(key, value, stored):
 @pytest.mark.parametrize("key,value", [
     ("liveness_v2", "yes"), ("liveness_v2_students", "12, 40"), ("liveness_v2_students", '{"a": 1}'),
     ("flash_min_signal", "lots"), ("antispoof_review_threshold", "2"), ("review_skip_match", "1.5"),
-    ("blink_open_max", "open"),
+    ("blink_open_max", "open"), ("require_enrolled_device", "off"),
 ])
 def test_bad_settings_are_refused(key, value):
     with pytest.raises(marking.MarkError):

@@ -379,8 +379,11 @@
           : pill('red', 'wifi', 'Not on SOM office WiFi'));
     }
 
+    // Any browser may mark unless the office limits marking to the enrolled
+    // phone (att_settings require_enrolled_device; absent = an older backend).
+    const deviceOk = net.device_required === false || net.device_enrolled;
     if (!net.face_enrolled) rows.push(pill('amber', 'id-badge', 'Enrollment pending'));
-    else if (!net.device_enrolled) rows.push(pill('red', 'mobile-alt', 'This phone is not your enrolled device'));
+    else if (!deviceOk) rows.push(pill('red', 'mobile-alt', 'This phone is not your enrolled device'));
 
     statusCard.innerHTML = `<div class="flex items-start gap-4">
         <span class="icon-chip chip-brand hidden sm:inline-flex"><i class="fas fa-calendar-day"></i></span>
@@ -391,7 +394,7 @@
       </div>`;
 
     const canMark = net.enabled && net.working_day && net.window.open_now && net.ip_allowed &&
-      net.face_enrolled && net.device_enrolled &&
+      net.face_enrolled && deviceOk &&
       !(net.today && net.today.kind !== 'void') && !net.pending_review;
 
     markBtn.classList.toggle('hidden', !canMark);
@@ -411,7 +414,7 @@
       : net.ip_unavailable ? 'The server cannot see which network you are on. Please inform the SOM office (proxy configuration).'
       : !net.ip_allowed ? 'Connect to the SOM office WiFi, then pull down to refresh.'
       : !net.face_enrolled ? 'Complete one-time enrollment at the SOM office first.'
-      : !net.device_enrolled ? 'Attendance can only be marked from your enrolled phone.'
+      : !deviceOk ? 'Attendance can only be marked from your enrolled phone.'
       : '';
 
     $('att-enroll-card').classList.toggle('hidden', net.face_enrolled === true);
@@ -829,12 +832,12 @@
 
       const { status, data } = await api('/enroll/capture', { method: 'POST', body: form });
       if (v2 && status === 200 && data.ok) {
-        await showResult('ok', 'You’re enrolled', 'This phone is now your attendance device.', 2600);
+        await showResult('ok', 'You’re enrolled', 'You can now mark attendance on the SOM office WiFi.', 2600);
         return;
       }
       closeCamera();
       if (status === 200 && data.ok) {
-        alert('Enrollment complete. This phone is now your attendance device.');
+        alert('Enrollment complete. You can now mark attendance on the SOM office WiFi.');
       } else {
         msg.textContent = data.message || 'Enrollment failed. Please retry with the office.';
       }

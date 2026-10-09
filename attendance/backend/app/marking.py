@@ -101,10 +101,25 @@ def check_window(day: date, at: datetime) -> DayWindow:
 
 
 # ---------------------------------------------------------------------------
-# Gate 4: device binding
+# Gate 4: device binding, only when att_settings require_enrolled_device='1'
 # ---------------------------------------------------------------------------
 
-def check_device(device: dict | None) -> dict:
+def device_required() -> bool:
+    """Whether marking is limited to the phone bound at enrollment. Off on
+    production since Oct 2026: the cookie went missing too often (private
+    tabs, other browsers, cleared data, new phones) and locked students out.
+    A missing row means the original behaviour, required."""
+    return get_setting("require_enrolled_device", "1") == "1"
+
+
+def check_device(device: dict | None) -> dict | None:
+    """The device to record the mark against, or None.
+
+    With the device check off, any browser may mark: an active bound device
+    is still returned (kept on the attempt and record for the office), and a
+    missing, foreign or revoked one is simply None."""
+    if not device_required():
+        return device if device and device["status"] == "active" else None
     if not device:
         raise MarkError(
             401, "DEVICE_NOT_ENROLLED",
@@ -306,7 +321,7 @@ CHALLENGES_PER_MINUTE = 4
 CHALLENGES_PER_ATTEMPT = 3
 
 
-def issue_challenge(student_id: int, device_id: int, steps: list[str] | str, day: date,
+def issue_challenge(student_id: int, device_id: int | None, steps: list[str] | str, day: date,
                     ttl_seconds: int, token_hash: str) -> None:
     """Store a challenge, refusing (and removing it again) past either cap.
     Insert-then-count, like reserve_attempt, so racing requests cannot

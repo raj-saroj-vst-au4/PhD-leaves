@@ -174,7 +174,7 @@ $mpAssets = json_encode([
         </div>
         <div class="card-body space-y-4">
             <p class="text-sm leading-relaxed text-gray-600">
-                Visit the SOM office with this phone <strong class="font-semibold text-gray-900">and connect to the office WiFi</strong>.
+                Visit the SOM office with your phone <strong class="font-semibold text-gray-900">and connect to the office WiFi</strong>.
                 A staff member will give you a short one-time code — enter it below and follow the camera
                 steps. Enrollment only works on the office WiFi, so no one can enroll your face remotely.
             </p>

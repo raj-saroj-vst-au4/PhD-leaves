@@ -186,6 +186,8 @@ def netcheck(request: Request, me: Principal = Depends(current_principal)):
         # original); the challenge itself is still decided at issue time.
         "liveness": marking.liveness_protocol(me.student_id) if me.student_id else 1,
         "device_enrolled": bool(device and device["status"] == "active"),
+        # False: any browser may mark (att_settings require_enrolled_device).
+        "device_required": marking.device_required(),
         "face_enrolled": bool(template),
         "pending_review": bool(pending),
         "today": today,
@@ -225,7 +227,7 @@ def mark_challenge(request: Request, me: Principal = Depends(current_student)):
         plan = faces.Challenge(faces.LIVENESS_V1, tuple(faces.new_challenge()))
     challenge = list(plan.steps)
     raw = secrets.token_urlsafe(24)
-    marking.issue_challenge(me.student_id, device["id"], plan.spec(), day,
+    marking.issue_challenge(me.student_id, device["id"] if device else None, plan.spec(), day,
                             CHALLENGE_TTL_SECONDS, hash_token(raw))
     body = {
         "ok": True,
@@ -355,7 +357,7 @@ def _server_busy() -> MarkError:
 
 
 def _mark_gates(request: Request, me: Principal, token: str, strict_code: str,
-                ip: str | None, day: date) -> tuple[dict, bool, dict]:
+                ip: str | None, day: date) -> tuple[dict | None, bool, dict]:
     """Every non-biometric gate, in order, then the challenge (checked, not yet
     consumed). Runs on the threadpool — it is all database round trips."""
     try:
@@ -367,7 +369,10 @@ def _mark_gates(request: Request, me: Principal, token: str, strict_code: str,
         marking.check_not_already_marked(me.student_id, day)
         marking.check_attempt_budget(me.student_id, day)
         challenge_row = _peek_challenge(token, me.student_id)
-        if device["id"] != challenge_row["device_id"]:
+        # A challenge issued to a bound device is answered from that device;
+        # one issued with the device check off (no device) from any browser.
+        if (challenge_row["device_id"] is not None
+                and (device["id"] if device else None) != challenge_row["device_id"]):
             raise MarkError(401, "DEVICE_MISMATCH", "Device changed mid-attempt. Please try again.")
         if not marking.active_template(me.student_id):
             raise MarkError(412, "FACE_NOT_ENROLLED", "Your face is not enrolled yet. Visit the SOM office.")
@@ -391,7 +396,7 @@ def _judge_mark(student_id: int, blobs: list[bytes], steps: list[str] | faces.Ch
     )
 
 
-def _settle_mark(me: Principal, *, day: date, ip: str | None, device: dict, strict_used: bool,
+def _settle_mark(me: Principal, *, day: date, ip: str | None, device: dict | None, strict_used: bool,
                  attempt_id: int, blobs: list[bytes], result: faces.VerifyResult):
     """Store the evidence, write the outcome, and mark present on a pass."""
     student = query_one("SELECT roll_number FROM students WHERE id=%s", (me.student_id,))
@@ -409,7 +414,8 @@ def _settle_mark(me: Principal, *, day: date, ip: str | None, device: dict, stri
         frames_dir=frames_dir,
         detail=result.detail,
     )
-    execute("UPDATE att_devices SET last_seen_at=NOW() WHERE id=%s", (device["id"],))
+    if device:
+        execute("UPDATE att_devices SET last_seen_at=NOW() WHERE id=%s", (device["id"],))
 
     if result.verdict == "fail":
         audit(
@@ -452,7 +458,7 @@ def _settle_mark(me: Principal, *, day: date, ip: str | None, device: dict, stri
             kind="self",
             marked_at=now_ist(),
             source_ip=ip,
-            device_id=device["id"],
+            device_id=device["id"] if device else None,
             attempt_id=attempt_id,
             selfie_path=frames_dir,
             selfie_sha256=primary_hash,
@@ -518,7 +524,8 @@ async def mark(
             await run_in_threadpool(_consume_challenge, challenge_row["id"])
             attempt_id = await run_in_threadpool(
                 marking.reserve_attempt,
-                student_id=me.student_id, day=day, source_ip=ip, device_id=device["id"],
+                student_id=me.student_id, day=day, source_ip=ip,
+                device_id=device["id"] if device else None,
                 challenge_spec=challenge_row["challenge"], user_agent=ua,
             )
             try:
@@ -811,7 +818,7 @@ async def enroll_capture(
                       source_ip=ip, details={"frames": len(embeddings), "quality": round(quality, 4)}))
     return {
         "ok": True,
-        "message": "Enrollment complete. This phone is now your attendance device.",
+        "message": "Enrollment complete. You can now mark attendance on the SOM office WiFi.",
         "frames_used": len(embeddings),
         "quality": round(quality, 4),
     }
@@ -1092,6 +1099,8 @@ def admin_set_setting(
         "liveness_v2", "liveness_v2_students", "flash_enabled",
         "flash_min_signal", "flash_min_correlation", "antispoof_review_threshold",
         "blink_closed_min", "blink_open_max", "blink_min_diff", "review_skip_match",
+        # any device vs. the enrolled phone only (marking.device_required)
+        "require_enrolled_device",
     }
     if key not in allowed:
         raise MarkError(400, "BAD_SETTING", "Unknown setting.")
@@ -1118,7 +1127,7 @@ def _valid_setting(key: str, value: str) -> str:
     """Normalise the liveness v2 knobs, refusing values the backend would
     silently misread (a typo in the pilot list must not quietly drop it)."""
     value = (value or "").strip()
-    if key in ("liveness_v2", "flash_enabled"):
+    if key in ("liveness_v2", "flash_enabled", "require_enrolled_device"):
         if value not in ("0", "1"):
             raise MarkError(400, "BAD_VALUE", "Use 1 (on) or 0 (off).")
     elif key == "liveness_v2_students":
