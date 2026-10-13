@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leave Cancelled by Student</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .container {
+            max-width: 600px;
+            margin: 30px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #1f2937;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 40px 30px;
+            line-height: 1.6;
+        }
+        .content h2 {
+            color: #1f2937;
+            font-size: 20px;
+            margin-top: 0;
+        }
+        .content p {
+            margin: 15px 0;
+            color: #4b5563;
+        }
+        .details-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 25px 0;
+        }
+        .details-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .details-table td:first-child {
+            font-weight: 600;
+            color: #6b7280;
+            width: 40%;
+        }
+        .details-table td:last-child {
+            color: #1f2937;
+        }
+        .remarks-box {
+            background-color: #f9fafb;
+            border-left: 4px solid #6b7280;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .remarks-box h3 {
+            margin: 0 0 10px 0;
+            color: #374151;
+            font-size: 16px;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid #e5e7eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Leave Cancelled by Student</h1>
+        </div>
+
+        <div class="content">
+            <h2>Dear {RECIPIENT_NAME},</h2>
+
+            <p><strong>{STUDENT_NAME}</strong> has cancelled the leave application below. No action is needed from you.</p>
+
+            <table class="details-table">
+                <tr>
+                    <td>Student:</td>
+                    <td><strong>{STUDENT_NAME}</strong> ({ROLL_NUMBER})</td>
+                </tr>
+                <tr>
+                    <td>Leave Type:</td>
+                    <td><strong>{LEAVE_TYPE}</strong></td>
+                </tr>
+                <tr>
+                    <td>Start Date:</td>
+                    <td>{START_DATE}</td>
+                </tr>
+                <tr>
+                    <td>End Date:</td>
+                    <td>{END_DATE}</td>
+                </tr>
+                <tr>
+                    <td>Total Days:</td>
+                    <td><strong>{TOTAL_DAYS}</strong></td>
+                </tr>
+                <tr>
+                    <td>Status before cancelling:</td>
+                    <td>{PREVIOUS_STATUS}</td>
+                </tr>
+            </table>
+
+            <div class="remarks-box">
+                <h3>Reason given by the student:</h3>
+                <p style="margin: 0;">{REASON}</p>
+            </div>
+
+            <p>{BALANCE_NOTE}</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated email from {SITE_NAME}. Please do not reply to this email.</p>
+            <p>&copy; 2025 IIT Bombay. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

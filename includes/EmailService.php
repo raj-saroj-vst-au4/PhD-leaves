@@ -274,6 +274,75 @@ class EmailService {
     }
 
     /**
+     * Tell the approvers that a student has cancelled their own leave.
+     *
+     * Everyone who has already approved it, or is holding it now, is told:
+     * the guide, TA coordinator and HOD once they have approved or while it
+     * waits on them, and the admins while it waits on them (including a guide/TA
+     * change held with the office) or once they have approved it. Someone it
+     * never reached is not told. Each address is sent to once — a guide who is
+     * also the TA coordinator gets one email.
+     *
+     * @param array $leave the application as it was BEFORE the cancellation
+     *   (Leave::getById), so the stages show who had seen it
+     * @param string $reason the reason the student gave
+     * @param int $refundedDays days returned to the balance
+     * @return bool true when every email was accepted
+     */
+    public function sendStudentCancellation($leave, $reason, $refundedDays) {
+        $status = $leave['status'];
+        $recipients = [];
+        if ($leave['guide_status'] === 'approved' || $status === 'pending_guide') {
+            $recipients[] = [$leave['guide_email'], $leave['guide_name']];
+        }
+        if ($leave['ta_status'] === 'approved' || $status === 'pending_ta') {
+            $recipients[] = [$leave['ta_coordinator_email'], $leave['ta_coordinator_name']];
+        }
+        if ($leave['hod_status'] === 'approved' || $status === 'pending_hod') {
+            $recipients[] = [$this->getHODEmail(), $this->getHODName()];
+        }
+        if ($leave['admin_status'] === 'approved' || in_array($status, ['pending_admin', 'pending_routing'], true)) {
+            foreach ($this->getAdminEmails() as $admin) {
+                $recipients[] = [$admin['email'], $admin['name']];
+            }
+        }
+
+        $wasApproved = $status === 'approved';
+        $subject = "Leave Cancelled by Student - {$leave['student_name']} ({$leave['roll_number']})";
+        $placeholders = [
+            '{STUDENT_NAME}' => $this->text($leave['student_name']),
+            '{ROLL_NUMBER}' => $this->text($leave['roll_number']),
+            '{LEAVE_TYPE}' => ucfirst($leave['leave_type']) . ' Leave',
+            '{START_DATE}' => date('d M Y', strtotime($leave['start_date'])),
+            '{END_DATE}' => date('d M Y', strtotime($leave['end_date'])),
+            '{TOTAL_DAYS}' => $leave['total_days'],
+            '{PREVIOUS_STATUS}' => $wasApproved ? 'Approved' : 'Pending (' . str_replace('_', ' ', $status) . ')',
+            '{REASON}' => $this->text($reason, true),
+            '{BALANCE_NOTE}' => $wasApproved
+                ? "$refundedDays day(s) have been returned to the student's " . $leave['leave_type'] . ' leave balance.'
+                : 'It had not been approved yet, so no leave balance had been deducted.',
+            '{SITE_NAME}' => SITE_NAME
+        ];
+
+        $success = true;
+        $sent = [];
+        foreach ($recipients as [$email, $name]) {
+            $key = strtolower(trim((string) $email));
+            if ($key === '' || isset($sent[$key])) {
+                continue;
+            }
+            $sent[$key] = true;
+            // The name goes in first, so "{RECIPIENT_NAME}" typed into the reason stays as typed.
+            $body = $this->loadTemplate('student_cancellation.html',
+                ['{RECIPIENT_NAME}' => $this->text($name)] + $placeholders);
+            if (!$this->sendEmail($email, $subject, $body, 'student_cancellation', $leave['id'], $name)) {
+                $success = false;
+            }
+        }
+        return $success;
+    }
+
+    /**
      * Send admin notification for adjacent leave detection
      * @param array $leave New leave application data
      * @param array $adjacentLeave Adjacent leave data

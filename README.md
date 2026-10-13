@@ -46,6 +46,8 @@ pending_guide → pending_ta → pending_hod → pending_admin → approved
 - **HOD** records the payment status (paid / partially paid / unpaid).
 - **Admin** finalises and may attach a signed document.
 
+A **student** can cancel their own application from Leave History, pending or approved, until the day before it starts (with a reason). An approved leave's days go back to the balance, except academic leave deducted before the latest half-yearly reset. Everyone who has approved it or is reviewing it is emailed. After that, only the admin can cancel, and only while it is pending.
+
 Leave types: `personal` (15/yr), `medical` (5/yr), `academic` (25/yr after 12 months from joining). Constants live in [config/constants.php](config/constants.php).
 
 ## Setup

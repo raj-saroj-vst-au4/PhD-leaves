@@ -821,10 +821,13 @@ class Approval {
     /**
      * The closing entry for a cancelled or combined leave: who, when and why.
      *
-     * Who comes from the audit log (system_logs, by "Ref ID"). Entries written
-     * before 2026-09 recorded the STUDENT as the actor of an admin's
-     * cancellation or combine (since fixed), so an actor who is the student
-     * on an admin-only action is shown as "the office" rather than misnamed.
+     * A cancellation since October 2026 records its own who, when and why
+     * (cancelled_by, cancelled_at, cancel_reason) — the student's or the
+     * admin's. Otherwise who comes from the audit log (system_logs, by
+     * "Ref ID"). Entries written before 2026-09 recorded the STUDENT as the
+     * actor of an admin's cancellation or combine (since fixed), so on those
+     * older rows an actor who is the student is shown as "the office" rather
+     * than misnamed.
      */
     private function outcomeEntry(array $leave) {
         $status = $leave['status'];
@@ -832,6 +835,23 @@ class Approval {
             return null;
         }
         $leaveId = (int) $leave['id'];
+
+        if ($status === 'cancelled' && !empty($leave['cancelled_by'])) {
+            $stmt = $this->db->prepare("SELECT name, role FROM users WHERE id = :id");
+            $stmt->execute([':id' => (int) $leave['cancelled_by']]);
+            $user = $stmt->fetch();
+            $reason = trim((string) ($leave['cancel_reason'] ?? ''));
+            return [
+                'stage' => 'Cancelled',
+                'approver_name' => $user ? $user['name'] . ' (' . ucfirst((string) $user['role']) . ')' : 'user #' . (int) $leave['cancelled_by'],
+                'approver_email' => null,
+                'status' => $status,
+                'remarks' => $reason !== '' ? $reason : null,
+                'approved_at' => $leave['cancelled_at'],
+                'outcome' => true,
+                'order' => 9
+            ];
+        }
 
         if ($status === 'cancelled') {
             $stmt = $this->db->prepare(
@@ -865,8 +885,8 @@ class Approval {
             $stage = 'Combined';
         }
 
-        // Only the office cancels or combines. The student as actor is the old
-        // logging bug; no log at all predates the audit trail.
+        // On these older rows only the office cancelled or combined. The student
+        // as actor is the old logging bug; no log at all predates the audit trail.
         if ($log && !empty($log['name']) && (int) $log['user_id'] !== (int) $leave['user_id']) {
             $who = $log['name'] . ' (' . ucfirst((string) $log['role']) . ')';
         } elseif ($log && $log['action'] === 'leave_cancelled_no_guide') {
@@ -1000,11 +1020,12 @@ class Approval {
      *
      * Called only inside a decision's transaction, after the status has moved
      * to 'approved' under the row lock — so each leave is deducted exactly once.
-     * Nothing is ever refunded on rejection or cancellation for the same reason:
-     * only a leave that reached 'approved' was deducted, and those cannot be
-     * rejected or cancelled here. The one balance change a rejection or
-     * cancellation makes is the reverse: restoreCombinedSources() charges again
-     * the approved leaves a combined leave had replaced.
+     * Only a leave that reached 'approved' was deducted, so a rejection or an
+     * admin's cancellation (pending leaves only) refunds nothing; the one
+     * balance change they make is the reverse: restoreCombinedSources() charges
+     * again the approved leaves a combined leave had replaced. The one refund
+     * is a student cancelling an approved leave before it starts
+     * (cancelByStudent).
      */
     private function deductLeaveBalance($leave, $actorId) {
         if (!in_array($leave['leave_type'], ['personal', 'medical', 'academic'], true)) {
@@ -1078,8 +1099,13 @@ class Approval {
             $this->transition($leaveId, $leave['status'],
                 "status = 'cancelled',
                  admin_remarks = :remarks,
-                 admin_approved_at = NOW()", [
+                 admin_approved_at = NOW(),
+                 cancelled_by = :cancelled_by,
+                 cancelled_at = NOW(),
+                 cancel_reason = :reason", [
                 ':remarks' => $remarks,
+                ':cancelled_by' => $adminId,
+                ':reason' => $remarks,
             ]);
 
             $restored = $this->restoreCombinedSources($leaveId, $adminId, 'cancelled');
@@ -1103,6 +1129,84 @@ class Approval {
 
         } catch (Throwable $e) {
             $this->abort($e, 'Admin cancellation failed', 'Failed to cancel leave');
+        }
+    }
+
+    /**
+     * A student cancels their own application: pending or approved, until the
+     * day before it starts (Leave::studentCanCancel), with a reason.
+     *
+     * An approved leave was deducted, so its days go back to the balance
+     * (Leave::cancellationRefund — all of them, except academic leave paid
+     * from an allocation a reset has since replaced), in this transaction.
+     *
+     * A combined leave is cancelled whole, and its sources stay 'combined':
+     * unlike an admin's cancellation, which puts approved sources back
+     * (restoreCombinedSources), the student is giving up all of those days.
+     * Whatever combineLeaves() refunded for the sources stays refunded.
+     *
+     * Locks only the leave row, then the balance row — the order every
+     * approval takes them in.
+     *
+     * @param int $studentUserId users.id of the student; must own the leave
+     * @return array previous_status, refunded_days
+     */
+    public function cancelByStudent($leaveId, $studentUserId, $reason) {
+        try {
+            if (strlen(trim((string) $reason)) < 5) {
+                throw new Exception("Please give a reason for cancelling (at least 5 characters)");
+            }
+
+            $leave = $this->lockLeave($leaveId);
+
+            if ((int) $leave['user_id'] !== (int) $studentUserId) {
+                throw new Exception("Leave application not found");
+            }
+            if (!in_array($leave['status'], Leave::LIVE_STATUSES, true)) {
+                throw new Exception("This application is already " . str_replace('_', ' ', $leave['status'])
+                    . ". Please refresh the page.");
+            }
+            if (!Leave::studentCanCancel($leave)) {
+                throw new Exception("This leave started on " . date('d M Y', strtotime($leave['start_date']))
+                    . ". You can cancel a leave only until the day before it starts; please contact the office.");
+            }
+
+            $leaveClass = new Leave($this->db);
+            $refund = $leaveClass->cancellationRefund($leave, true);
+
+            $this->transition($leaveId, $leave['status'],
+                "status = 'cancelled',
+                 cancelled_by = :cancelled_by,
+                 cancelled_at = NOW(),
+                 cancel_reason = :reason", [
+                ':cancelled_by' => $studentUserId,
+                ':reason' => $reason,
+            ]);
+
+            if ($refund > 0) {
+                $leaveClass->updateBalance($leave['student_id'], $leave['leave_type'], $refund);
+                $this->logAction($studentUserId, 'leave_balance_refunded', $leaveId,
+                    "Refunded $refund days to the {$leave['leave_type']} leave balance of student "
+                    . $this->studentLabel($leave) . ": the approved leave was cancelled by the student");
+            }
+
+            $leaveClass->repointAdjacentLeaves($leaveId);
+
+            $this->logAction($studentUserId, 'student_cancelled', $leaveId,
+                "Student cancelled leave application ID $leaveId (" . $this->studentLabel($leave)
+                . "). Previous status: {$leave['status']}"
+                . ($leave['status'] === 'approved' ? "; refunded $refund of {$leave['total_days']} days" : ''));
+
+            $this->commitDecision();
+
+            return [
+                'success' => true,
+                'previous_status' => $leave['status'],
+                'refunded_days' => $refund
+            ];
+
+        } catch (Throwable $e) {
+            $this->abort($e, 'Student cancellation failed', 'Failed to cancel leave');
         }
     }
 

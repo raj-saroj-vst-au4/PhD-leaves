@@ -43,6 +43,19 @@ class Leave {
         return "'" . implode("','", self::LIVE_STATUSES) . "'";
     }
 
+    /**
+     * May the student cancel this application themselves? Pending or approved,
+     * and not started yet: the last day to cancel is the day before start_date.
+     * From the first day of leave on, only the office can change it.
+     * Approval::cancelByStudent() enforces this under the row lock; pages use
+     * it to decide whether to offer the button.
+     */
+    public static function studentCanCancel(array $leave, $today = null) {
+        $today = $today ?? date('Y-m-d');
+        return in_array($leave['status'], self::LIVE_STATUSES, true)
+            && $leave['start_date'] > $today;
+    }
+
     /** Balances are topped up on these days (MM-DD) — see resetBalances(). */
     const RESET_MONTH_DAYS = ['01-01', '07-01'];
 
@@ -99,7 +112,8 @@ class Leave {
         if ($overlap) {
             throw new Exception(sprintf(
                 "These dates overlap your existing %s leave application #%d (%s to %s, %s). "
-                . "Check your Leave History; ask the office to cancel that application first if it needs changing.",
+                . "Check your Leave History: you can cancel it there until the day before it starts; "
+                . "after that, ask the office.",
                 $overlap['leave_type'], $overlap['id'],
                 date('d M Y', strtotime($overlap['start_date'])),
                 date('d M Y', strtotime($overlap['end_date'])),
@@ -1517,19 +1531,84 @@ class Leave {
 
         // combineLeaves() pointed every live leave that was adjacent to a source
         // at the combined leave. That leave is now dead, so re-derive their
-        // adjacency (the restored sources are live again) — otherwise the
-        // split-leave warning disappears and they can never be combined.
+        // adjacency (the restored sources are live again).
+        $this->repointAdjacentLeaves($combinedLeaveId);
+
+        return $restored;
+    }
+
+    /**
+     * $deadLeaveId has just been rejected or cancelled. Live leaves whose
+     * adjacent_leave_id points at it get their adjacency worked out again —
+     * otherwise the split-leave warning points at a dead leave and they can
+     * never be combined. Call it in the transaction that changed the status.
+     */
+    public function repointAdjacentLeaves($deadLeaveId) {
         $stmt = $this->db->prepare(
             "SELECT id, student_id, start_date, end_date FROM leave_applications
              WHERE adjacent_leave_id = :cid AND status IN (" . self::liveStatusSql() . ")");
-        $stmt->execute([':cid' => (int) $combinedLeaveId]);
+        $stmt->execute([':cid' => (int) $deadLeaveId]);
         $repoint = $this->db->prepare("UPDATE leave_applications SET adjacent_leave_id = :adj WHERE id = :id");
         foreach ($stmt->fetchAll() as $l) {
             $adj = $this->findAdjacentLeave($l['student_id'], $l['start_date'], $l['end_date'], [(int) $l['id']]);
             $repoint->execute([':adj' => $adj ? (int) $adj['id'] : null, ':id' => (int) $l['id']]);
         }
+    }
 
-        return $restored;
+    /**
+     * How many days cancelling this application gives back to the balance.
+     *
+     * Nothing unless it is approved: a leave is deducted only on reaching
+     * 'approved'. Personal and medical carry forward across the half-yearly
+     * reset, so an approved one gets all its days back. Academic does not —
+     * the reset sets it to the allocation — so an academic leave deducted
+     * before the latest reset RAN was paid out of an allocation that no longer
+     * exists, and refunding it would lift the new half-year above the
+     * allocation. It gets nothing back. When the reset ran, not its date: a
+     * catch-up for 1 July applied in October wipes deductions made in August.
+     *
+     * When it was deducted comes from the audit log: the latest
+     * 'leave_balance_deducted' entry for it (Approval, combineLeaves() and
+     * restoreCombinedSources() all write one). Its approval timestamps are the
+     * fallback; for a combined leave those are the sources' dates, not when
+     * the combined leave was charged. When the reset ran is the first
+     * 'cron_leave_reset' entry for last_reset_academic's date; a date with no
+     * run (the account's creation date) counts from its midnight.
+     *
+     * @param bool $forUpdate lock the balance row (the caller is about to
+     *   refund, inside its transaction) so a reset running at the same moment
+     *   cannot change last_reset_academic between this check and the refund
+     */
+    public function cancellationRefund(array $leave, $forUpdate = false) {
+        if ($leave['status'] !== 'approved') {
+            return 0;
+        }
+        $days = (int) $leave['total_days'];
+        if ($leave['leave_type'] !== 'academic') {
+            return $days;
+        }
+
+        $stmt = $this->db->prepare("SELECT last_reset_academic FROM leave_balances
+                                    WHERE student_id = :student_id" . ($forUpdate ? " FOR UPDATE" : ""));
+        $stmt->execute([':student_id' => $leave['student_id']]);
+        $lastReset = $stmt->fetchColumn();
+        if (!$lastReset) {
+            return $days;
+        }
+
+        $stmt = $this->db->prepare("SELECT MAX(created_at) FROM system_logs
+                                    WHERE action = 'leave_balance_deducted' AND description REGEXP ?");
+        $stmt->execute(['Ref ID: ' . (int) $leave['id'] . '([^0-9]|$)']);
+        $deductedAt = $stmt->fetchColumn()
+            ?: max((string) $leave['hod_approved_at'], (string) $leave['admin_approved_at']);
+
+        $stmt = $this->db->prepare("SELECT MIN(created_at) FROM system_logs
+                                    WHERE action = 'cron_leave_reset' AND description LIKE ?");
+        $stmt->execute(["Leave balances reset for $lastReset:%"]);
+        $resetAt = $stmt->fetchColumn() ?: "$lastReset 00:00:00";
+
+        // Both 'Y-m-d H:i:s' in IST (MariaDB and PHP), so they compare as strings.
+        return $deductedAt !== '' && $deductedAt < $resetAt ? 0 : $days;
     }
 
     /**

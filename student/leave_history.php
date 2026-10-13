@@ -4,12 +4,57 @@
  * View all leave applications with status and approval chain
  */
 
-$pageTitle = 'Leave History';
-require_once __DIR__ . '/../includes/header.php';
-requireRole('student');
-
+// NOTE: POST handler must come BEFORE header.php include to avoid "headers already sent" error
+require_once __DIR__ . '/../config/constants.php';
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../classes/Leave.php';
 require_once __DIR__ . '/../classes/Approval.php';
+require_once __DIR__ . '/../includes/EmailService.php';
+
+requireRole('student');
+
+// Cancel one of the student's own leaves (until the day before it starts).
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'cancel') {
+    checkCSRF();
+    // An admin "logged in as" the student would be recorded as the student
+    // cancelling; the office cancels from Leave Management instead.
+    blockIfImpersonating('Leave cannot be cancelled while impersonating a student. '
+        . 'Use Leave Management to cancel it as the office.');
+
+    $leaveId = (int) ($_POST['leave_id'] ?? 0);
+    $reason = sanitize($_POST['reason'] ?? '');
+    try {
+        $before = (new Leave())->getById($leaveId);
+        $result = (new Approval())->cancelByStudent($leaveId, getCurrentUserId(), $reason);
+
+        if ($result['previous_status'] !== 'approved') {
+            $message = 'Your leave application has been cancelled.';
+        } elseif ($result['refunded_days'] > 0) {
+            $message = "Your leave has been cancelled and {$result['refunded_days']} day(s) returned to your "
+                . "{$before['leave_type']} leave balance.";
+        } else {
+            $message = 'Your leave has been cancelled. Its days were not returned to your academic leave balance: '
+                . 'they came out of the allocation before the latest half-yearly reset, which has since been replaced.';
+        }
+        setFlashMessage('success', $message);
+
+        // Committed; the emails are best-effort.
+        try {
+            (new EmailService())->sendStudentCancellation($before, $reason, $result['refunded_days']);
+        } catch (Throwable $emailEx) {
+            logError("Student cancellation email failed for leave $leaveId: " . $emailEx->getMessage());
+        }
+    } catch (Exception $e) {
+        setFlashMessage('error', $e->getMessage());
+    }
+    header('Location: ' . BASE_URL . '/student/leave_history.php');
+    exit;
+}
+
+$pageTitle = 'Leave History';
+require_once __DIR__ . '/../includes/header.php';
 
 $studentId = getCurrentStudentId();
 $leaveClass = new Leave();
@@ -167,9 +212,26 @@ usort($timeline, function($a, $b) {
                                     <?php echo timeAgo($leave['created_at']); ?>
                                 </td>
                                 <td class="whitespace-nowrap">
-                                    <button onclick="viewLeaveDetails(<?php echo (int) $leave['id']; ?>)" class="btn btn-secondary btn-sm">
-                                        <i class="fas fa-eye"></i> View
-                                    </button>
+                                    <div class="flex gap-2">
+                                        <button onclick="viewLeaveDetails(<?php echo (int) $leave['id']; ?>)" class="btn btn-secondary btn-sm">
+                                            <i class="fas fa-eye"></i> View
+                                        </button>
+                                        <?php if (Leave::studentCanCancel($leave)): ?>
+                                            <?php /* Data for openCancelModal(), which sets it with
+                                               textContent: plain text, not HTML. */ ?>
+                                            <button onclick="openCancelModal(<?php echo htmlspecialchars(json_encode([
+                                                'id' => (int) $leave['id'],
+                                                'leave_type' => getLeaveTypeLabel($leave['leave_type']),
+                                                'dates' => formatDate($leave['start_date']) . ' to ' . formatDate($leave['end_date']),
+                                                'days' => (int) $leave['total_days'],
+                                                'approved' => $leave['status'] === 'approved',
+                                                'refund' => $leaveClass->cancellationRefund($leave),
+                                                'last_day' => formatDate(date('Y-m-d', strtotime($leave['start_date'] . ' -1 day')))
+                                            ], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8'); ?>)" class="btn btn-soft-danger btn-sm">
+                                                <i class="fas fa-ban"></i> Cancel
+                                            </button>
+                                        <?php endif; ?>
+                                    </div>
                                 </td>
                             </tr>
                         <?php else: ?>
@@ -238,6 +300,63 @@ usort($timeline, function($a, $b) {
         <div id="modalContent" class="px-6 py-5">
             <!-- Content will be loaded dynamically -->
         </div>
+    </div>
+</div>
+
+<!-- Cancel Leave Modal -->
+<div id="cancelModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="cancelModalTitle">
+    <div class="modal-panel max-w-md">
+        <div class="flex items-center justify-between gap-4 border-b border-gray-100 px-6 py-4">
+            <div class="flex items-center gap-3">
+                <span class="icon-chip-sm chip-rose"><i class="fas fa-ban"></i></span>
+                <h3 id="cancelModalTitle" class="text-lg font-semibold text-gray-900">Cancel Leave</h3>
+            </div>
+            <button type="button" onclick="closeCancelModal()" class="btn-icon" title="Close" aria-label="Close">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <form method="POST" id="cancelForm">
+            <?php echo getCSRFField(); ?>
+            <input type="hidden" name="action" value="cancel">
+            <input type="hidden" name="leave_id" id="cancelLeaveId">
+
+            <div class="space-y-4 px-6 py-5">
+                <div>
+                    <p class="font-semibold text-gray-900" id="cancelLeaveType"></p>
+                    <p class="mt-1 text-sm text-gray-500"><span id="cancelLeaveDates"></span> · <span id="cancelLeaveDays"></span></p>
+                </div>
+
+                <div>
+                    <label for="cancelReason" class="form-label">
+                        Reason for cancelling <span class="text-rose-500">*</span>
+                    </label>
+                    <textarea id="cancelReason"
+                              name="reason"
+                              rows="3"
+                              required
+                              minlength="5"
+                              class="form-textarea"
+                              placeholder="Why are you cancelling this leave? (at least 5 characters)"></textarea>
+                </div>
+
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle mt-0.5"></i>
+                    <p id="cancelBalanceNote"></p>
+                </div>
+
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle mt-0.5"></i>
+                    <p>This cannot be undone: to take this leave later you will have to apply again. Whoever has already approved it, or is reviewing it now, will be told by email.</p>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-end gap-3 rounded-b-2xl border-t border-gray-100 bg-gray-50/70 px-6 py-4">
+                <button type="button" onclick="closeCancelModal()" class="btn btn-secondary">Keep Leave</button>
+                <button type="submit" class="btn btn-danger">
+                    <i class="fas fa-ban"></i>Cancel Leave
+                </button>
+            </div>
+        </form>
     </div>
 </div>
 
@@ -360,6 +479,37 @@ function closeModal() {
     document.getElementById('leaveModal').classList.add('hidden');
 }
 
+function openCancelModal(leave) {
+    document.getElementById('cancelLeaveId').value = leave.id;
+    document.getElementById('cancelLeaveType').textContent = leave.leave_type;
+    document.getElementById('cancelLeaveDates').textContent = leave.dates;
+    document.getElementById('cancelLeaveDays').textContent = leave.days + (leave.days === 1 ? ' day' : ' days');
+    let note;
+    if (!leave.approved) {
+        note = 'This leave has not been approved yet, so nothing has been deducted from your balance.';
+    } else if (leave.refund > 0) {
+        note = leave.refund + (leave.refund === 1 ? ' day' : ' days') + ' will be returned to your leave balance.';
+    } else {
+        note = 'These days came out of your academic leave allocation before the latest half-yearly reset, '
+             + 'so they cannot be returned to your current balance.';
+    }
+    document.getElementById('cancelBalanceNote').textContent =
+        note + ' You can cancel until ' + leave.last_day + '.';
+    document.getElementById('cancelReason').value = '';
+    document.getElementById('cancelModal').classList.remove('hidden');
+    document.getElementById('cancelReason').focus();
+}
+
+function closeCancelModal() {
+    document.getElementById('cancelModal').classList.add('hidden');
+}
+
+document.getElementById('cancelModal')?.addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeCancelModal();
+    }
+});
+
 // Close modal on outside click
 document.getElementById('leaveModal')?.addEventListener('click', function(e) {
     if (e.target === this) {
@@ -371,6 +521,7 @@ document.getElementById('leaveModal')?.addEventListener('click', function(e) {
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         closeModal();
+        closeCancelModal();
     }
 });
 </script>
