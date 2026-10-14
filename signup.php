@@ -200,6 +200,7 @@ $pageTitle = 'Complete Registration';
                 <?php else: ?>
                     <h1 class="text-2xl font-semibold tracking-tight text-gray-900">Set your password</h1>
                     <p class="mt-1.5 text-sm text-gray-500">Welcome, <strong class="font-semibold text-gray-900"><?php echo sanitize($userData['name']); ?></strong>! Choose a password to activate your account.</p>
+                    <p class="mt-2 text-sm text-gray-500">This password is for this portal only &mdash; it is separate from your IITB LDAP / webmail password.</p>
 
                     <?php if ($error): ?>
                         <div class="alert alert-error mt-6" role="alert">
@@ -215,7 +216,7 @@ $pageTitle = 'Complete Registration';
                             <dd class="truncate font-medium text-gray-900"><?php echo sanitize($userData['name']); ?></dd>
                         </div>
                         <div class="flex items-center justify-between gap-4 px-4 py-2.5">
-                            <dt class="text-gray-500">Email</dt>
+                            <dt class="text-gray-500">Sign-in email</dt>
                             <dd class="truncate font-medium text-gray-900"><?php echo sanitize($userData['email']); ?></dd>
                         </div>
                         <div class="flex items-center justify-between gap-4 px-4 py-2.5">

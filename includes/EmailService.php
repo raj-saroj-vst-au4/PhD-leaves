@@ -108,15 +108,27 @@ class EmailService {
      * @param string $email Recipient email
      * @param string $name Recipient name
      * @param string $token Password reset token
+     * @param string|null $requestedAs The address typed on the forgot-password
+     *        page when it found this account by name (it differs from $email)
      * @return bool Success status
      */
-    public function sendPasswordReset($email, $name, $token) {
+    public function sendPasswordReset($email, $name, $token, $requestedAs = null) {
         $subject = "Password Reset Request - " . SITE_NAME;
         $resetLink = $this->getAbsoluteUrl("/reset-password.php?token=" . $token);
+
+        // Tell them which address the account actually uses, so the next
+        // sign-in does not fail the same way.
+        $addressNote = '';
+        if ($requestedAs !== null) {
+            $addressNote = '<div class="note"><strong>Your sign-in address:</strong> this request was made with <strong>'
+                . htmlspecialchars($requestedAs, ENT_QUOTES, 'UTF-8') . '</strong>, but your portal account is registered as <strong>'
+                . htmlspecialchars($email, ENT_QUOTES, 'UTF-8') . '</strong>. Please sign in with that address.</div>';
+        }
 
         $placeholders = [
             '{NAME}' => $name,
             '{RESET_LINK}' => $resetLink,
+            '{ADDRESS_NOTE}' => $addressNote,
             '{EXPIRY_HOURS}' => TOKEN_EXPIRY_HOURS,
             '{SITE_NAME}' => SITE_NAME,
             '{YEAR}' => date('Y'),

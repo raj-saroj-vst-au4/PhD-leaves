@@ -323,6 +323,88 @@ class User {
     }
 
     /**
+     * The account a sign-in or reset address refers to: the account with exactly
+     * that email, or else the one active person a name-based IITB address points
+     * at (see findByNameAlias). Returns [account row or null, true when it was
+     * found through the name]. Both lookups always run, so an unknown address
+     * costs the same work as a known one.
+     */
+    public function resolveAccount($email) {
+        try {
+            $exact = $this->getByEmail($email);
+            $alias = $this->findByNameAlias($email);
+        } catch (PDOException $e) {
+            logError("Account lookup failed: " . $e->getMessage());
+            return [null, false];
+        }
+        if ($exact) {
+            return [$exact, false];
+        }
+        return $alias ? [$alias, true] : [null, false];
+    }
+
+    /**
+     * The one active account whose holder's name matches a name-based address.
+     *
+     * Many accounts are registered under the roll-number address (25d1521@)
+     * while students type their name-based one (roshni.tiwari@) — the same
+     * IITB mailbox, but no account has it, so sign-in and password reset
+     * silently failed. Matched on the letters of the address against the name:
+     * first+last, last+first or the full name ("roshni.tiwari", "ananyagupta",
+     * "kalro.arti"), else first...last with a middle part ("prashantrajmishra"
+     * for "Prashant Mishra"). Exactly one match or nothing; roll-number
+     * addresses are never guessed around.
+     *
+     * @return array|null the matched users row
+     */
+    public function findByNameAlias($email) {
+        $email = strtolower(trim((string) $email));
+        $at = strrpos($email, '@');
+        if ($at === false) {
+            return null;
+        }
+        $local = substr($email, 0, $at);
+        $domain = substr($email, $at + 1);
+        if (preg_match('/^\d{2}[a-z]\d{4}$/', $local)) {
+            return null;
+        }
+        $typed = preg_replace('/[^a-z]/', '', $local);
+        if (strlen($typed) < 5) {
+            return null;
+        }
+
+        $honorifics = ['prof', 'dr', 'mr', 'mrs', 'ms', 'miss', 'shri', 'smt', 'sri'];
+        $exact = [];
+        $loose = [];
+        foreach ($this->db->query("SELECT * FROM users WHERE is_active = 1")->fetchAll() as $u) {
+            if (strtolower(substr(strrchr($u['email'], '@'), 1)) !== $domain) {
+                continue;
+            }
+            $tokens = array_values(array_diff(
+                preg_split('/[^a-z]+/', strtolower($u['name']), -1, PREG_SPLIT_NO_EMPTY),
+                $honorifics
+            ));
+            if (count($tokens) < 2) {
+                continue;   // a single name ("Renu") is too ambiguous to match on
+            }
+            $first = $tokens[0];
+            $last = $tokens[count($tokens) - 1];
+            if (in_array($typed, [implode('', $tokens), $first . $last, $last . $first], true)) {
+                $exact[] = $u;
+            } elseif (strlen($first) >= 3 && strlen($last) >= 3
+                && strlen($typed) > strlen($first) + strlen($last)
+                && ((str_starts_with($typed, $first) && str_ends_with($typed, $last))
+                    || (str_starts_with($typed, $last) && str_ends_with($typed, $first)))) {
+                $loose[] = $u;
+            }
+        }
+        if (count($exact) === 1) {
+            return $exact[0];
+        }
+        return (!$exact && count($loose) === 1) ? $loose[0] : null;
+    }
+
+    /**
      * Update user profile
      */
     public function updateProfile($userId, $data) {

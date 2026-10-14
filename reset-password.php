@@ -109,7 +109,7 @@ $pageTitle = 'Reset Password';
             <span class="icon-chip chip-brand"><i class="fas fa-lock"></i></span>
             <h1 class="mt-4 text-2xl font-semibold tracking-tight text-gray-900">Create new password</h1>
             <?php if ($userData): ?>
-                <p class="mt-1.5 text-sm text-gray-500">Choose a strong password you don't use anywhere else.</p>
+                <p class="mt-1.5 text-sm text-gray-500">Choose a strong password you don't use anywhere else. This password is for this portal only; it does not change your IITB LDAP / webmail password.</p>
             <?php endif; ?>
 
             <?php if ($error): ?>

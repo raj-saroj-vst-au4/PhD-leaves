@@ -28,7 +28,6 @@ $useCaptcha = captchaEnabled();
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = sanitize($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
-    $emailKey = authAttemptEmailKey($email);
     $clientIp = getClientIp();
 
     // Captcha is checked (and consumed) BEFORE we spend cycles on password_verify.
@@ -48,19 +47,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Please enter a valid email address';
     } elseif (!validateDomain($email)) {
         $error = 'Please use your @' . ALLOWED_DOMAIN . ' email address';
-    } elseif (($attemptId = loginReserveAttempt($emailKey, $clientIp)) === false) {
-        // Locked: the password is not even looked at, so a guesser learns
-        // nothing from further tries. Same message whether or not the address
-        // has an account.
-        $error = 'Too many failed sign-in attempts. Please wait 15 minutes and try again.';
     } else {
         try {
             $user = new User();
 
-            if ($user->authenticate($email, $password)) {
+            // A name-based address (roshni.tiwari@) signs in to the account it
+            // belongs to (25d1521@), see User::resolveAccount. The password is
+            // checked against that account and the failure limit counts against
+            // it, so spelling variants of one person's address share one budget.
+            [$account, $byName] = $user->resolveAccount($email);
+            $signInEmail = $account['email'] ?? $email;
+            $emailKey = authAttemptEmailKey($signInEmail);
+
+            if (($attemptId = loginReserveAttempt($emailKey, $clientIp)) === false) {
+                // Locked: the password is not even looked at, so a guesser learns
+                // nothing from further tries. Same message whether or not the address
+                // has an account.
+                $error = 'Too many failed sign-in attempts. Please wait 15 minutes and try again.';
+            } elseif ($user->authenticate($signInEmail, $password)) {
                 // Also removes the attempt reserved above.
                 authAttemptClear('login_fail', $emailKey);
-                $userData = $user->getByEmail($email);
+                $userData = $user->getByEmail($signInEmail);
+                if ($byName) {
+                    logSystemAction($userData['id'], 'login_by_name', 'auth', sprintf(
+                        'Signed in as %s, matched to this account (%s) by name',
+                        html_entity_decode($email, ENT_QUOTES, 'UTF-8'), $userData['email']
+                    ));
+                }
 
                 // Get student ID if user is a student
                 $studentId = null;
@@ -243,6 +256,10 @@ $pageTitle = 'Login';
                                 required
                             >
                         </div>
+                        <p class="form-help">
+                            Your portal password, set from your invitation or a reset email &mdash; not your
+                            IITB LDAP / webmail password. Never set one? Use <em>Forgot password?</em> below.
+                        </p>
                     </div>
 
                     <?php if ($useCaptcha): ?>

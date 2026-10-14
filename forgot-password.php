@@ -22,6 +22,7 @@ $error = '';
 $success = '';
 $email = '';
 $pendingReset = null;   // account to email once the page has been delivered
+$requestedAs = null;    // the name-based address typed, when it found the account by name
 
 // Handle forgot password form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -48,8 +49,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
          * varies — registered or not, active or not, throttled or not — and the
          * limits below decide silently whether a mail actually goes out.
          */
-        $emailKey = authAttemptEmailKey($email);
         $clientIp = getClientIp();
+
+        // The account this address refers to: its own, or the one a name-based
+        // address belongs to (roshni.tiwari@ for an account registered as
+        // 25d1521@). The mail only ever goes to the account's registered
+        // address, and every per-account limit below counts against that
+        // account, so trying spelling variants buys no extra mails.
+        try {
+            [$userData, $byName] = (new User())->resolveAccount($email);
+        } catch (Exception $e) {
+            logError("Forgot password lookup error: " . $e->getMessage());
+            [$userData, $byName] = [null, false];
+        }
+        $emailKey = authAttemptEmailKey($userData['email'] ?? $email);
 
         /*
          * Every well-formed request does the same database work whether or not
@@ -74,14 +87,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sentRecently = authAttemptCount('reset_sent', 'email', $emailKey, RESET_EMAIL_MIN_INTERVAL_SECONDS);
             $sentToday = authAttemptCount('reset_sent', 'email', $emailKey, 86400);
 
-            $user = new User();
-            $userData = $user->getByEmail($email);
-
             $send = $locked && !$ipFlooding && $sentRecently === 0 && $sentToday < RESET_EMAIL_MAX_PER_DAY
                 && $userData && (int) $userData['is_active'] === 1;
             authAttemptSetAction($attemptId, $send ? 'reset_sent' : 'reset_request');
             if ($send) {
                 $pendingReset = $userData;
+                $requestedAs = $byName ? $email : null;
             }
         } catch (Exception $e) {
             logError("Forgot password error: " . $e->getMessage());
@@ -128,6 +139,11 @@ $pageTitle = 'Forgot Password';
             <span class="icon-chip chip-brand"><i class="fas fa-key"></i></span>
             <h1 class="mt-4 text-2xl font-semibold tracking-tight text-gray-900">Reset password</h1>
             <p class="mt-1.5 text-sm text-gray-500">Enter your email address and we'll send you a link to reset your password.</p>
+            <div class="alert alert-info mt-4" role="note">
+                <i class="fas fa-info-circle mt-0.5"></i>
+                <p>This portal has its own password. It is <strong>not</strong> your IITB LDAP / webmail
+                password, and resetting it here does not change that one.</p>
+            </div>
 
             <?php if ($error): ?>
                 <div class="alert alert-error mt-6" role="alert">
@@ -165,10 +181,10 @@ $pageTitle = 'Forgot Password';
                         >
                     </div>
                     <p class="form-help">
-                        Enter the exact address your portal invitation was sent to &mdash; the one you
-                        sign in with. For many students this is the roll-number address
-                        (e.g. <span class="font-mono">25d1503@iitb.ac.in</span>), not a name-based one.
-                        A link is only sent if that address has an account.
+                        Use the address your portal invitation was sent to &mdash; for many students the
+                        roll-number address (e.g. <span class="font-mono">25d1503@iitb.ac.in</span>).
+                        If you type your name-based IITB address instead, we look for your account by
+                        name and send the link to the address registered on it.
                     </p>
                 </div>
 
@@ -217,8 +233,15 @@ if ($pendingReset !== null) {
         $resetUser = new User();
         $result = $resetUser->generatePasswordResetToken($pendingReset['id']);
         if (!empty($result['success'])) {
+            if ($requestedAs !== null) {
+                logSystemAction($pendingReset['id'], 'password_reset_by_name', 'auth', sprintf(
+                    'Reset requested as %s, matched to this account by name; link sent to %s',
+                    html_entity_decode($requestedAs, ENT_QUOTES, 'UTF-8'), $pendingReset['email']
+                ));
+            }
             $emailService = new EmailService();
-            if (!$emailService->sendPasswordReset($pendingReset['email'], $pendingReset['name'], $result['token'])) {
+            if (!$emailService->sendPasswordReset($pendingReset['email'], $pendingReset['name'], $result['token'],
+                    $requestedAs !== null ? html_entity_decode($requestedAs, ENT_QUOTES, 'UTF-8') : null)) {
                 logError('Password reset email could not be sent', ['user_id' => (int) $pendingReset['id']]);
             }
         } else {
