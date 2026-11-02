@@ -746,6 +746,89 @@ class User {
     }
 
     /**
+     * Give many students the same TA coordinator, keeping each one's faculty
+     * guide. Every student goes through updateStudentGuideAndTA() — same
+     * validation, audit entry, sign-off and leave re-routing as the single
+     * edit — in a transaction of its own, so one failure does not undo the
+     * others. Notifications go out after each commit.
+     *
+     * @param int[]    $userIds         users.id of the students
+     * @param int|null $taCoordinatorId new TA (active faculty), or 0/null to remove it
+     * @return array{updated: string[], unchanged: string[], failed: array<string,string>,
+     *               moved: int, returned: int, stranded: int}
+     */
+    public function bulkUpdateTACoordinator(array $userIds, $taCoordinatorId, $actorId = null) {
+        $actorId = $actorId ?? $this->currentActorId();
+        $taCoordinatorId = $taCoordinatorId ? (int) $taCoordinatorId : null;
+        if ($taCoordinatorId) {
+            $check = $this->db->prepare("SELECT id FROM users WHERE id = ? AND role = 'faculty' AND is_active = 1");
+            $check->execute([$taCoordinatorId]);
+            if (!$check->fetch()) {
+                throw new Exception("Invalid TA coordinator selected - not an active faculty member");
+            }
+        }
+
+        $summary = ['updated' => [], 'unchanged' => [], 'failed' => [], 'moved' => 0, 'returned' => 0, 'stranded' => 0];
+        $lock = $this->db->prepare(
+            "SELECT s.faculty_guide_id, s.ta_coordinator_id, u.name
+             FROM students s JOIN users u ON u.id = s.user_id
+             WHERE s.user_id = ? AND u.role = 'student' AND u.is_active = 1 FOR UPDATE");
+
+        foreach (array_unique(array_map('intval', $userIds)) as $userId) {
+            if ($userId <= 0) {
+                continue;
+            }
+            $label = "user #$userId";
+            try {
+                $this->db->beginTransaction();
+                $lock->execute([$userId]);
+                $student = $lock->fetch();
+                $lock->closeCursor();
+                if (!$student) {
+                    throw new Exception("not an active student");
+                }
+                $label = html_entity_decode((string) $student['name'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                $oldTa = $student['ta_coordinator_id'] === null ? null : (int) $student['ta_coordinator_id'];
+                if ($oldTa === $taCoordinatorId) {
+                    $this->db->commit();
+                    $summary['unchanged'][] = $label;
+                    continue;
+                }
+
+                // Inside our transaction, so it defers its notifications to us.
+                $this->updateStudentGuideAndTA($userId, (int) $student['faculty_guide_id'], (int) $taCoordinatorId, $actorId);
+                $signoffNotify = $this->getPendingSignoffNotifications();
+                $routing = $this->getLeaveRoutingResult();
+                $this->db->commit();
+
+                $summary['updated'][] = $label;
+                $summary['moved'] += count($routing['moved'] ?? []);
+                $summary['returned'] += count($routing['returned'] ?? []);
+                $summary['stranded'] += count($routing['stranded'] ?? []);
+
+                $approval = !empty($signoffNotify) ? $this->attendanceApproval() : null;
+                if ($approval !== null && method_exists($approval, 'notifyTargets')) {
+                    try {
+                        $approval->notifyTargets($signoffNotify);
+                    } catch (Exception $e) {
+                        logError("Sign-off re-route notification failed for user #$userId: " . $e->getMessage());
+                    }
+                }
+                if (!empty($routing['notify'])) {
+                    Approval::sendRoutingNotifications($routing['notify']);
+                }
+            } catch (Exception $e) {
+                if ($this->db->inTransaction()) {
+                    $this->db->rollBack();
+                }
+                logError("Bulk TA update failed for user #$userId: " . $e->getMessage());
+                $summary['failed'][$label] = preg_replace('/^Failed to update student guide and TA: /', '', $e->getMessage());
+            }
+        }
+        return $summary;
+    }
+
+    /**
      * AttendanceApproval, if this install has rerouteForStudent() (it re-routes
      * pending monthly sign-offs after a roster change); null otherwise, so the
      * roster edit still works on an install without it.

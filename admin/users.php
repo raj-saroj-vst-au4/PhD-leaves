@@ -433,6 +433,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 }
 
+// Bulk: give many students the same TA coordinator (each keeps their guide)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'bulk_update_ta') {
+    try {
+        checkCSRF();
+
+        $userIds = array_values(array_filter(array_map('intval', (array) ($_POST['user_ids'] ?? []))));
+        $taCoordinatorId = (int) ($_POST['ta_coordinator_id'] ?? 0);
+        if (!$userIds) {
+            throw new Exception("Select at least one student.");
+        }
+
+        $summary = $userClass->bulkUpdateTACoordinator($userIds, $taCoordinatorId, $adminId);
+        $taName = 'no TA coordinator';
+        if ($taCoordinatorId > 0 && ($ta = $userClass->getById($taCoordinatorId))) {
+            $taName = plainName($ta['name']);
+        }
+        logSystemAction($adminId, 'bulk_ta_updated', 'students', sprintf(
+            "Bulk TA change to %s: %d updated, %d already had it, %d failed",
+            $taCoordinatorId > 0 ? "#$taCoordinatorId $taName" : 'none',
+            count($summary['updated']), count($summary['unchanged']), count($summary['failed'])
+        ));
+
+        $message = count($summary['updated']) . ' student(s) now have ' . $taName . ' as TA coordinator.';
+        if ($summary['unchanged']) {
+            $message .= ' ' . count($summary['unchanged']) . ' already had them.';
+        }
+        if ($summary['moved']) {
+            $message .= ' ' . $summary['moved'] . ' leave application(s) waiting at the TA stage were forwarded to the HOD.';
+        }
+        if ($summary['returned']) {
+            $message .= ' ' . $summary['returned'] . ' application(s) no faculty member had approved yet were sent back to the Faculty Guide.';
+        }
+        if ($summary['failed']) {
+            $failures = [];
+            foreach ($summary['failed'] as $name => $why) {
+                $failures[] = "$name ($why)";
+            }
+            setFlashMessage('warning', $message . ' Not updated: ' . implode('; ', $failures) . '.');
+        } elseif ($summary['stranded']) {
+            setFlashMessage('warning', $message . ' ' . $summary['stranded'] . ' application(s) are waiting for a '
+                . 'Faculty Guide whose student has none — assign one or cancel them.');
+        } else {
+            setFlashMessage('success', $message);
+        }
+    } catch (Exception $e) {
+        setFlashMessage('error', $e->getMessage());
+    }
+    header('Location: ' . $listUrl);
+    exit();
+}
+
 // Handle leave balance adjustment
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'adjust_balance') {
     try {
@@ -522,6 +573,9 @@ if ($roleFilter !== '') {
 // Get faculty for dropdowns
 $allFaculty = $userClass->getAllByRole('faculty', true);
 
+// Active students for the bulk TA coordinator modal
+$bulkStudents = $userClass->getAllStudents(true);
+
 // Calculate statistics
 $studentCount = count($userClass->getAllByRole('student', false));
 $facultyCount = count($userClass->getAllByRole('faculty', false));
@@ -537,6 +591,9 @@ $activeCount = count(array_filter($users, fn($u) => $u['is_active']));
         <p class="page-subtitle">Manage system users and send invitations</p>
     </div>
     <div class="flex gap-2">
+        <button onclick="openBulkTAModal()" class="btn btn-secondary w-full sm:w-auto">
+            <i class="fas fa-users-cog"></i>Bulk update TA
+        </button>
         <button onclick="showInviteModal()" class="btn btn-primary w-full sm:w-auto">
             <i class="fas fa-user-plus"></i>Invite User
         </button>
@@ -1003,6 +1060,109 @@ $listTitle = [
                 </button>
                 <button type="submit" class="btn btn-primary">
                     <i class="fas fa-save"></i>Update
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Bulk TA Coordinator Modal -->
+<div id="bulkTAModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm">
+    <div class="modal-panel max-w-3xl">
+        <div class="flex items-center justify-between gap-4 border-b border-gray-100 px-6 py-4">
+            <div class="flex min-w-0 items-center gap-3">
+                <span class="icon-chip-sm chip-brand"><i class="fas fa-users-cog"></i></span>
+                <div class="min-w-0">
+                    <h3 class="text-base font-semibold text-gray-900">Bulk update TA coordinator</h3>
+                    <p class="text-xs text-gray-500">Each student keeps their faculty guide.</p>
+                </div>
+            </div>
+            <button type="button" onclick="closeBulkTAModal()" class="btn-icon" title="Close" aria-label="Close">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+
+        <form method="POST" id="bulkTAForm" onsubmit="return confirmBulkTA()">
+            <?php echo getCSRFField(); ?>
+            <input type="hidden" name="action" value="bulk_update_ta">
+
+            <div class="space-y-4 px-6 py-5">
+                <div>
+                    <label for="bulkTANew" class="form-label">New TA coordinator</label>
+                    <select name="ta_coordinator_id" id="bulkTANew" class="form-select" required>
+                        <option value="">-- Select TA Coordinator --</option>
+                        <?php foreach ($allFaculty as $faculty): ?>
+                            <option value="<?php echo (int) $faculty['id']; ?>"><?php echo userAttr($faculty['name']); ?></option>
+                        <?php endforeach; ?>
+                        <option value="0">None (remove the TA coordinator)</option>
+                    </select>
+                </div>
+
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div class="flex-1">
+                        <label for="bulkTASearch" class="form-label">Find students</label>
+                        <input type="search" id="bulkTASearch" class="form-input" placeholder="Name, roll number or email" oninput="filterBulkTA()">
+                    </div>
+                    <div class="sm:w-56">
+                        <label for="bulkTAFilter" class="form-label">Current TA</label>
+                        <select id="bulkTAFilter" class="form-select" onchange="filterBulkTA()">
+                            <option value="">Any</option>
+                            <option value="0">None assigned</option>
+                            <?php foreach ($allFaculty as $faculty): ?>
+                                <option value="<?php echo (int) $faculty['id']; ?>"><?php echo userAttr($faculty['name']); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between gap-3 text-sm">
+                    <div class="flex gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="selectShownBulkTA(true)">Select shown</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="selectShownBulkTA(false)">Clear shown</button>
+                    </div>
+                    <span class="text-gray-500"><span id="bulkTAShown">0</span> shown &middot; <strong id="bulkTACount" class="text-gray-900">0</strong> selected</span>
+                </div>
+
+                <div class="max-h-80 overflow-y-auto rounded-xl border border-gray-200">
+                    <table class="table-modern">
+                        <thead>
+                            <tr>
+                                <th class="w-10"></th>
+                                <th>Student</th>
+                                <th class="hidden sm:table-cell">Faculty guide</th>
+                                <th>Current TA</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($bulkStudents as $s): ?>
+                                <?php $search = strtolower(plainName($s['name']) . ' ' . $s['roll_number'] . ' ' . $s['email']); ?>
+                                <tr class="bulk-ta-row" data-ta="<?php echo (int) $s['ta_coordinator_id']; ?>" data-search="<?php echo htmlspecialchars($search, ENT_QUOTES, 'UTF-8'); ?>">
+                                    <td>
+                                        <input type="checkbox" name="user_ids[]" value="<?php echo (int) $s['id']; ?>" id="bulkTA<?php echo (int) $s['id']; ?>" class="h-4 w-4 rounded border-gray-300" onchange="countBulkTA()">
+                                    </td>
+                                    <td>
+                                        <label for="bulkTA<?php echo (int) $s['id']; ?>" class="block cursor-pointer">
+                                            <span class="font-medium text-gray-900"><?php echo userAttr($s['name']); ?></span>
+                                            <span class="block text-xs text-gray-500"><?php echo userAttr($s['roll_number']); ?></span>
+                                        </label>
+                                    </td>
+                                    <td class="hidden text-gray-600 sm:table-cell"><?php echo $s['guide_name'] ? userAttr($s['guide_name']) : '<span class="text-gray-400">None</span>'; ?></td>
+                                    <td class="text-gray-600"><?php echo $s['ta_coordinator_name'] ? userAttr($s['ta_coordinator_name']) : '<span class="text-gray-400">None</span>'; ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="form-help">
+                    Leave applications waiting at the TA stage and pending monthly attendance sign-offs move to the new
+                    TA coordinator, exactly as when you edit one student.
+                </p>
+            </div>
+
+            <div class="flex items-center justify-end gap-3 rounded-b-2xl border-t border-gray-100 bg-gray-50/70 px-6 py-4">
+                <button type="button" onclick="closeBulkTAModal()" class="btn btn-secondary">Cancel</button>
+                <button type="submit" id="bulkTASubmit" class="btn btn-primary" disabled>
+                    <i class="fas fa-save"></i>Update <span id="bulkTASubmitCount">0</span> student(s)
                 </button>
             </div>
         </form>
@@ -1486,6 +1646,59 @@ function openEditGuideTA(userId, userName) {
         });
 }
 
+// Bulk TA coordinator: rows stay checked while filtered out, so a selection can
+// be built up across several searches; only the count of all checked is shown.
+function openBulkTAModal() {
+    document.getElementById('bulkTAModal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    filterBulkTA();
+}
+
+function closeBulkTAModal() {
+    document.getElementById('bulkTAModal').classList.add('hidden');
+    document.body.style.overflow = 'auto';
+    document.getElementById('bulkTAForm').reset();
+    filterBulkTA();
+}
+
+function bulkTARows() {
+    return Array.from(document.querySelectorAll('#bulkTAModal .bulk-ta-row'));
+}
+
+function filterBulkTA() {
+    const q = document.getElementById('bulkTASearch').value.trim().toLowerCase();
+    const ta = document.getElementById('bulkTAFilter').value;
+    let shown = 0;
+    bulkTARows().forEach(row => {
+        const show = (!q || row.dataset.search.includes(q)) && (ta === '' || row.dataset.ta === ta);
+        row.classList.toggle('hidden', !show);
+        if (show) shown++;
+    });
+    document.getElementById('bulkTAShown').textContent = shown;
+    countBulkTA();
+}
+
+function selectShownBulkTA(on) {
+    bulkTARows().forEach(row => {
+        if (!row.classList.contains('hidden')) row.querySelector('input[type=checkbox]').checked = on;
+    });
+    countBulkTA();
+}
+
+function countBulkTA() {
+    const n = document.querySelectorAll('#bulkTAModal input[name="user_ids[]"]:checked').length;
+    document.getElementById('bulkTACount').textContent = n;
+    document.getElementById('bulkTASubmitCount').textContent = n;
+    document.getElementById('bulkTASubmit').disabled = n === 0;
+}
+
+function confirmBulkTA() {
+    const sel = document.getElementById('bulkTANew');
+    const n = document.querySelectorAll('#bulkTAModal input[name="user_ids[]"]:checked').length;
+    const who = sel.value === '0' ? 'remove the TA coordinator from' : 'set ' + sel.options[sel.selectedIndex].text + ' as TA coordinator for';
+    return confirm('This will ' + who + ' ' + n + ' student(s). Continue?');
+}
+
 function closeEditGuideTAModal() {
     document.getElementById('editGuideTAModal').classList.add('hidden');
     document.body.style.overflow = 'auto';
@@ -1636,6 +1849,7 @@ document.addEventListener('keydown', function(event) {
         closeDeleteModal();
         closeViewUserModal();
         closeEditGuideTAModal();
+        closeBulkTAModal();
         closeDeactivateModal();
         closeReactivateModal();
         closeAdjustBalanceModal();
