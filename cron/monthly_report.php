@@ -7,6 +7,11 @@
  * Crontab entry (the script itself decides whether today is the day, so the
  * window only has to contain the last working day of every month):
  * 0 17 20-31 * * /usr/bin/php /var/www/html/phdtimeoff/cron/monthly_report.php
+ *
+ * To (re)send the report for a month that has ended:
+ *   php cron/monthly_report.php --month=2026-10
+ * That skips the last-working-day check and reports on the leave as it stands
+ * now. An existing CSV for that month is kept as the record of the original run.
  */
 
 /*
@@ -75,6 +80,27 @@ try {
 
     $today = new DateTime();
 
+    // --month=YYYY-MM: a resend for a month that has ended. $today becomes that
+    // month's last day, so every range and label below is for that month.
+    $resendMonth = null;
+    foreach (array_slice($argv ?? [], 1) as $arg) {
+        if (preg_match('/^--month=(\d{4}-(0[1-9]|1[0-2]))$/', $arg, $m)) {
+            $resendMonth = $m[1];
+        } else {
+            cronLog("ERROR: unknown argument '$arg' (expected --month=YYYY-MM). Exiting.");
+            exit(1);
+        }
+    }
+    if ($resendMonth !== null) {
+        $today = new DateTime($resendMonth . '-01');
+        $today->modify('last day of this month');
+        if ($today->format('Y-m-d') >= (new DateTime())->format('Y-m-d')) {
+            cronLog("ERROR: $resendMonth has not ended yet; the scheduled run sends it. Exiting.");
+            exit(1);
+        }
+        cronLog("Resending the report for " . $today->format('F Y') . " (--month)");
+    }
+
     // Last working day of the month, by Holiday's calendar: Mon-Fri, minus
     // holidays, plus any weekend day the holidays table declares working. The
     // old loop put every holidays row in one "holiday" list and never read
@@ -90,7 +116,7 @@ try {
     cronLog("Last working day of month: " . $lastWorkingDay->format('Y-m-d'));
     cronLog("Today: " . $today->format('Y-m-d'));
 
-    if ($today->format('Y-m-d') !== $lastWorkingDay->format('Y-m-d')) {
+    if ($resendMonth === null && $today->format('Y-m-d') !== $lastWorkingDay->format('Y-m-d')) {
         cronLog("Not the last working day. Exiting.");
         exit(0);
     }
@@ -162,7 +188,8 @@ try {
 
     // Generate CSV report
     $csvFile = $logDir . '/monthly_report_' . $today->format('Y-m') . '.csv';
-    $fp = @fopen($csvFile, 'w');
+    $keepOriginal = $resendMonth !== null && file_exists($csvFile);
+    $fp = $keepOriginal ? false : @fopen($csvFile, 'w');
 
     if ($fp) {
         fputcsv($fp, ['Monthly Leave Report - ' . $today->format('F Y')]);
@@ -222,6 +249,8 @@ try {
 
         // Clean up old CSV reports (keep last 12 months)
         cleanupOldFiles($logDir . '/', 'monthly_report_*.csv', 12);
+    } elseif ($keepOriginal) {
+        cronLog("Kept the existing CSV from the original run: $csvFile");
     } else {
         cronLog("WARNING: Could not write CSV report to $csvFile (permission denied). Skipping CSV generation.");
     }
@@ -241,7 +270,7 @@ try {
     $stmt = $db->prepare("INSERT INTO system_logs (user_id, action, module, description)
                           VALUES (NULL, 'cron_monthly_report', 'cron', :description)");
     $stmt->execute([
-        ':description' => "Monthly report generated for " . $today->format('F Y') . ". Sent to $emailsSent admins. Failed: $emailsFailed"
+        ':description' => "Monthly report " . ($resendMonth !== null ? 're-sent' : 'generated') . " for " . $today->format('F Y') . ". Sent to $emailsSent admins. Failed: $emailsFailed"
     ]);
 
     cronLog("Report emails sent: $emailsSent, Failed: $emailsFailed");
