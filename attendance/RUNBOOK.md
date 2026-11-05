@@ -366,8 +366,15 @@ sudo systemctl enable --now attendance-report.timer attendance-purge.timer atten
 
 ## The monthly report
 - Auto-generated **1st, 08:00 IST**, previous month, emailed to recipients, and
-  archived (XLSX + SHA-256) under `data/reports/`. Regeneration makes a new
+  archived (CSV + SHA-256) under `data/reports/`. Regeneration makes a new
   version; old files are never overwritten (stipends were paid against them).
+- **Format**: CSV since Nov 2026 (UTF-8 with BOM, opens in Excel) — one row
+  per student: Roll No, Name, Working Days, Present, of which Manual, Excused,
+  Absent, Attendance %, Failed Attempts, On roll, then one column per working
+  day (P present, M manual, E excused, A absent, N not on roll, - future). A
+  cell starting with = + - @ is prefixed with ' so a name cannot run as a
+  formula. Reports generated before then are .xlsx and download as such
+  (`att_reports.xlsx_path`/`xlsx_sha256` hold either file).
 - Present = self-marked or manual; **Excused = office-excused OR an approved
   leave** in the leave system (auto-pulled, so approved leave never counts as
   absence); Absent = a working day with none of the above.
@@ -425,7 +432,7 @@ sudo systemctl enable --now attendance-report.timer attendance-purge.timer atten
 
 ## Backups
 The portal's existing DB backup already covers `att_*` (same schema). Also back
-up `attendance/data/reports/` — those archived XLSX files are the payment record.
+up `attendance/data/reports/` — those archived CSV (earlier: XLSX) files are the payment record.
 `data/frames/` is transient (60-day retention) and need not be backed up.
 
 ## Security notes / threat model

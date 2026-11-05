@@ -556,8 +556,8 @@
           <input id="atta-rep-year" type="number" value="${prev.getFullYear()}" class="form-input w-24 py-2"></div>
         <div><label for="atta-rep-month" class="form-label text-xs">Month</label>
           <input id="atta-rep-month" type="number" min="1" max="12" value="${prev.getMonth() + 1}" class="form-input w-20 py-2"></div>
-        <button id="atta-rep-gen" class="btn btn-primary py-2"><i class="fas fa-file-excel"></i>Generate now</button>
-        <p class="basis-full text-xs leading-relaxed text-gray-500 sm:basis-0 sm:flex-1 sm:self-center">Also generated automatically on the 1st at 08:00 and emailed to the recipients configured above.</p>
+        <button id="atta-rep-gen" class="btn btn-primary py-2"><i class="fas fa-file-csv"></i>Generate CSV</button>
+        <p class="basis-full text-xs leading-relaxed text-gray-500 sm:basis-0 sm:flex-1 sm:self-center">A CSV: one row per student with the month's totals, then one column per working day (P present, M manual, E excused, A absent, N not on roll). Also generated automatically on the 1st at 08:00 and emailed to the recipients configured above.</p>
       </div>
       <div class="card overflow-hidden"><div class="overflow-x-auto">
         <table class="table-modern">
@@ -596,7 +596,9 @@
         const blob = await res.blob();
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = (res.headers.get('content-disposition') || '').split('filename=')[1] || 'attendance.xlsx';
+        // The server quotes the name (filename="…"); reports before Nov 2026 are .xlsx.
+        const named = /filename="?([^";]+)"?/.exec(res.headers.get('content-disposition') || '');
+        a.download = named ? named[1] : 'attendance.csv';
         a.click();
       };
     });

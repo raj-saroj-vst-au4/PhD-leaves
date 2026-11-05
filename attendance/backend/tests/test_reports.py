@@ -204,3 +204,34 @@ def test_revoke_erases_embeddings(monkeypatch):
     sql, params = calls[0]
     assert "embeddings='[]'" in sql and "embedding_count=0" in sql
     assert params == (3, "lost phone", 12)
+
+
+# --- the CSV file (since Nov 2026) ---
+
+def test_csv_has_totals_then_one_column_per_working_day(tmp_path):
+    import csv
+    data = {
+        "year": 2026, "month": 10, "days": ["2026-10-01", "2026-10-03"],
+        "rows": [
+            {"roll": "22d1508", "name": "Ayushi Rai", "working_days": 2, "present": 1, "manual": 0,
+             "excused": 1, "absent": 0, "percentage": 100.0, "failed_attempts": 2,
+             "per_day": {"2026-10-01": "P", "2026-10-03": "E"}},
+            # A name that a spreadsheet would run as a formula, and no percentage.
+            {"roll": "25d1521", "name": "=HYPERLINK(\"http://x\")", "working_days": 2, "present": 0,
+             "manual": 0, "excused": 0, "absent": 2, "percentage": None, "failed_attempts": 0,
+             "per_day": {"2026-10-01": "A"}, "joining_date": "2026-10-02"},
+        ],
+    }
+    path = tmp_path / "r.csv"
+    reports._write_csv(data, path)
+
+    raw = path.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")          # BOM: Excel reads UTF-8 names correctly
+    rows = list(csv.reader(path.open(encoding="utf-8-sig", newline="")))
+    assert rows[0] == ["Roll No", "Name", "Working Days", "Present", "of which Manual",
+                       "Excused (leave)", "Absent", "Attendance %", "Failed Attempts", "On roll",
+                       "2026-10-01", "2026-10-03"]
+    assert rows[1] == ["22d1508", "Ayushi Rai", "2", "1", "0", "1", "0", "100.0", "2", "", "P", "E"]
+    assert rows[2][1] == "'=HYPERLINK(\"http://x\")"
+    assert rows[2][7] == "n/a" and rows[2][9] == "joined 2026-10-02"
+    assert rows[2][10:] == ["A", "-"]

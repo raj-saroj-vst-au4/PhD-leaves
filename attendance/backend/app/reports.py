@@ -10,6 +10,7 @@ Absent   = a working day with none of the above, on which the student was on
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import logging
@@ -21,9 +22,6 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
-
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
 
 from .config import get_settings
 from .db import execute, get_setting, query_all, query_one
@@ -259,19 +257,21 @@ def generate_monthly(year: int, month: int, *, trigger: str = "scheduled",
 
     out_dir = Path(get_settings().reports_dir) / f"{year}-{month:02d}-v{version}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    xlsx_path = out_dir / f"attendance-{year}-{month:02d}-v{version}.xlsx"
+    # CSV since Nov 2026 (reports up to then are .xlsx and stay as archived).
+    # The att_reports columns keep their xlsx_* names; they hold either file.
+    report_path = out_dir / f"attendance-{year}-{month:02d}-v{version}.csv"
 
-    _write_xlsx(data, xlsx_path)
-    sha256 = hashlib.sha256(xlsx_path.read_bytes()).hexdigest()
+    _write_csv(data, report_path)
+    sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
 
     report_id = execute(
         "INSERT INTO att_reports (period_year, period_month, version, trigger_type, triggered_by, "
         "working_days, student_count, xlsx_path, xlsx_sha256) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (year, month, version, trigger, triggered_by, data["working_days"],
-         data["student_count"], str(xlsx_path), sha256),
+         data["student_count"], str(report_path), sha256),
     )
 
-    email_status, email_error, recipients = _email_report(data, xlsx_path)
+    email_status, email_error, recipients = _email_report(data, report_path)
     execute(
         "UPDATE att_reports SET email_status=%s, email_error=%s, emailed_to=%s WHERE id=%s",
         (email_status, email_error, json.dumps(recipients), report_id),
@@ -301,68 +301,45 @@ def _roll_note(row: dict, data: dict) -> str:
     return "; ".join(notes)
 
 
-def _write_xlsx(data: dict, path: Path) -> None:
-    wb = Workbook()
+LEGEND = [
+    ("P", "Present — self-marked with face verification on office WiFi"),
+    ("M", "Present — marked manually by the office (reason on record)"),
+    ("E", "Excused — approved leave (leave system) or office-excused"),
+    ("A", "Absent"),
+    ("N", "Not on the roll that day (before joining, or after the account was deactivated)"),
+    ("-", "Future date at generation time"),
+]
 
-    head_font = Font(bold=True, color="FFFFFF")
-    head_fill = PatternFill("solid", fgColor="1F4E79")
-    centre = Alignment(horizontal="center")
 
-    ws = wb.active
-    ws.title = "Summary"
-    ws.append([f"PhD Attendance — {data['month_name']} {data['year']} "
-               f"(working days: {data['working_days']})"])
-    ws["A1"].font = Font(bold=True, size=13)
-    ws.append([])
+def _cell(value) -> str | int | float:
+    """A CSV cell that a spreadsheet will not run as a formula: a student's
+    name is their own text, and one starting with = + - @ would otherwise be
+    evaluated when the office opens the file in Excel."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
+
+
+def _write_csv(data: dict, path: Path) -> None:
+    """One row per student: the month's totals, then one column per working
+    day (P, M, E, A, N or -; see LEGEND). UTF-8 with a byte-order mark so
+    Excel shows names correctly when the file is double-clicked."""
     header = ["Roll No", "Name", "Working Days", "Present", "of which Manual",
               "Excused (leave)", "Absent", "Attendance %", "Failed Attempts", "On roll"]
-    ws.append(header)
-    for cell in ws[3]:
-        cell.font, cell.fill, cell.alignment = head_font, head_fill, centre
-
-    for row in data["rows"]:
-        ws.append([
-            row["roll"], row["name"], row["working_days"], row["present"], row["manual"],
-            row["excused"], row["absent"],
-            row["percentage"] if row["percentage"] is not None else "n/a",
-            row["failed_attempts"],
-            _roll_note(row, data),
-        ])
-    widths = [16, 30, 14, 10, 16, 15, 10, 14, 16, 30]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64 + i)].width = w
-
-    # Day-by-day matrix: P present, M manual, E excused, A absent
-    matrix = wb.create_sheet("Daily")
-    matrix.append(["Roll No", "Name"] + [d[8:] for d in data["days"]])
-    for cell in matrix[1]:
-        cell.font, cell.fill, cell.alignment = head_font, head_fill, centre
-    for row in data["rows"]:
-        matrix.append([row["roll"], row["name"]] +
-                      [row["per_day"].get(d, "-") for d in data["days"]])
-    matrix.column_dimensions["A"].width = 16
-    matrix.column_dimensions["B"].width = 30
-
-    legend = wb.create_sheet("Legend")
-    for line in [
-        ["P", "Present — self-marked with face verification on office WiFi"],
-        ["M", "Present — marked manually by the office (reason on record)"],
-        ["E", "Excused — approved leave (leave system) or office-excused"],
-        ["A", "Absent"],
-        ["N", "Not on the roll that day (before joining, or after the account was deactivated)"],
-        ["-", "Future date at generation time"],
-        [],
-        ["This report is generated from an append-only record.",
-         "Every manual entry carries a mandatory reason and the acting staff member."],
-    ]:
-        legend.append(line)
-    legend.column_dimensions["A"].width = 6
-    legend.column_dimensions["B"].width = 80
-
-    wb.save(path)
+    with path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(header + data["days"])
+        for row in data["rows"]:
+            writer.writerow([_cell(v) for v in [
+                row["roll"], row["name"], row["working_days"], row["present"], row["manual"],
+                row["excused"], row["absent"],
+                row["percentage"] if row["percentage"] is not None else "n/a",
+                row["failed_attempts"],
+                _roll_note(row, data),
+            ]] + [row["per_day"].get(d, "-") for d in data["days"]])
 
 
-def _email_report(data: dict, xlsx_path: Path) -> tuple[str, str | None, list[str]]:
+def _email_report(data: dict, report_path: Path) -> tuple[str, str | None, list[str]]:
     try:
         recipients = [r for r in json.loads(get_setting("report_recipients", "[]")) if r]
     except (TypeError, ValueError):
@@ -379,17 +356,19 @@ def _email_report(data: dict, xlsx_path: Path) -> tuple[str, str | None, list[st
                       f"({data['student_count']} students, {data['working_days']} working days)")
     msg["From"] = os.environ.get("EMAIL_FROM", "phd-attendance@som.iitb.ac.in")
     msg["To"] = ", ".join(recipients)
+    legend = "\n".join(f"  {code}  {meaning}" for code, meaning in LEGEND)
     msg.set_content(
-        f"Attached is the PhD attendance report for {data['month_name']} {data['year']}.\n\n"
+        f"Attached is the PhD attendance report for {data['month_name']} {data['year']} (CSV).\n\n"
         f"Working days: {data['working_days']}\nStudents: {data['student_count']}\n\n"
-        f"SHA-256 of the attached file:\n{hashlib.sha256(xlsx_path.read_bytes()).hexdigest()}\n\n"
+        f"The columns after \"On roll\" are the working days:\n{legend}\n\n"
+        f"SHA-256 of the attached file:\n{hashlib.sha256(report_path.read_bytes()).hexdigest()}\n\n"
         f"Generated automatically by the PhD Time-Off portal attendance module."
     )
     msg.add_attachment(
-        xlsx_path.read_bytes(),
-        maintype="application",
-        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=xlsx_path.name,
+        report_path.read_bytes(),
+        maintype="text",
+        subtype="csv",
+        filename=report_path.name,
     )
 
     try:

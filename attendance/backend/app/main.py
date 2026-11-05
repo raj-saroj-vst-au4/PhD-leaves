@@ -1339,9 +1339,13 @@ def admin_report_download(report_id: int, me: Principal = Depends(current_admin)
     row = query_one("SELECT * FROM att_reports WHERE id=%s", (report_id,))
     if not row or not row["xlsx_path"]:
         raise MarkError(404, "NO_REPORT", "Report not found.")
-    name = f"attendance-{row['period_year']}-{row['period_month']:02d}-v{row['version']}.xlsx"
+    # CSV since Nov 2026; earlier reports are archived .xlsx and served as such.
+    is_csv = row["xlsx_path"].endswith(".csv")
+    name = (f"attendance-{row['period_year']}-{row['period_month']:02d}-v{row['version']}"
+            + (".csv" if is_csv else ".xlsx"))
     return FileResponse(row["xlsx_path"], filename=name,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                        media_type="text/csv; charset=utf-8" if is_csv
+                        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.post("/api/jobs/monthly-report")
