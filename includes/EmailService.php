@@ -777,7 +777,10 @@ class EmailService {
             '{MEDICAL_LEAVES}' => $reportData['medical_leaves'] ?? 0,
             '{ACADEMIC_LEAVES}' => $reportData['academic_leaves'] ?? 0,
             '{EXTENDED_LEAVES}' => $reportData['extended_leaves'] ?? 0,
-            '{REPORT_URL}' => $this->getAbsoluteUrl("/admin"),
+            // The month's own page. This used to be the bare /admin directory,
+            // which has no index page: nginx answered 403 Forbidden.
+            '{REPORT_URL}' => $this->getAbsoluteUrl('/admin/monthly_leaves.php?month='
+                . date('Y-m', strtotime($reportData['month'])) . '&show=all'),
             '{SITE_NAME}' => SITE_NAME
         ];
 
