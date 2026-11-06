@@ -42,7 +42,7 @@ $role = sanitize($_POST['role'] ?? '');
 $remarks = sanitize($_POST['remarks'] ?? '');
 
 // Validation
-if (empty($leaveId) || empty($action) || empty($remarks)) {
+if (empty($leaveId) || empty($action)) {
     jsonResponse(false, 'All fields are required', [], 400);
 }
 
@@ -50,12 +50,22 @@ if (!in_array($action, ['approve', 'reject', 'cancel'])) {
     jsonResponse(false, 'Invalid action', [], 400);
 }
 
-if (strlen($remarks) < 5) {
-    jsonResponse(false, 'Remarks must be at least 5 characters', [], 400);
-}
-
 $userId = getCurrentUserId();
 $userRole = getCurrentUserRole();
+
+// Remarks are what the student reads when a leave is turned down, so a
+// rejection (and an admin cancellation) needs them. A guide, TA or the HOD
+// approving may leave them blank; an admin approval still needs them.
+$remarks = trim($remarks);
+if ($action !== 'approve' || !in_array($userRole, ['faculty', 'hod'], true)) {
+    if (strlen($remarks) < 5) {
+        jsonResponse(false, $action === 'approve'
+            ? 'Remarks must be at least 5 characters'
+            : 'Please give a reason (at least 5 characters)', [], 400);
+    }
+} elseif ($remarks === '') {
+    $remarks = null;   // stored as NULL, so pages show no empty "Remarks" line
+}
 
 // Only an admin may cancel. For anyone else 'cancel' used to fall through to the
 // reject branch and reject the application instead.

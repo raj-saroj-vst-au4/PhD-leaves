@@ -412,7 +412,9 @@ $totalCount = $guideCount + $taCount;
 
                 <div>
                     <label for="remarks" class="form-label">
-                        Remarks <span class="text-rose-500">*</span>
+                        <span id="remarksLabel">Remarks</span>
+                        <span id="remarksRequired" class="text-rose-500">*</span>
+                        <span id="remarksOptional" class="font-normal text-gray-400">(optional)</span>
                     </label>
                     <textarea
                         id="remarks"
@@ -420,7 +422,6 @@ $totalCount = $guideCount + $taCount;
                         rows="3"
                         class="form-textarea"
                         placeholder="Please provide your remarks..."
-                        required
                     ></textarea>
                 </div>
 
@@ -507,6 +508,18 @@ function showApprovalModal(leaveId, action, role) {
     banner.className = 'flex items-center rounded-xl px-3.5 py-2.5 text-sm ring-1 ring-inset ' + bannerCls;
     banner.innerHTML = '<i class="fas ' + roleIcon + ' mr-2"></i>You are acting as <strong class="mx-1">' + roleLong + '</strong>';
 
+    // Remarks are needed only to reject: they are the reason the student reads.
+    const remarks  = document.getElementById('remarks');
+    const rejecting = action !== 'approve';
+    remarks.required = rejecting;
+    remarks.minLength = rejecting ? 5 : 0;
+    remarks.placeholder = rejecting
+        ? 'Why is this leave being rejected? The student will see this (at least 5 characters).'
+        : 'Any note for the student or the next approver (optional)';
+    document.getElementById('remarksLabel').textContent = rejecting ? 'Reason for rejection' : 'Remarks';
+    document.getElementById('remarksRequired').classList.toggle('hidden', !rejecting);
+    document.getElementById('remarksOptional').classList.toggle('hidden', rejecting);
+
     if (action === 'approve') {
         title.textContent = 'Approve Leave (' + roleLong + ')';
         submitBtn.className = 'btn btn-success';
@@ -532,6 +545,11 @@ document.getElementById('approvalForm').addEventListener('submit', async functio
     const formData = new FormData(this);
     const action   = formData.get('action');
     const role     = formData.get('role');
+
+    if (action !== 'approve' && String(formData.get('remarks') || '').trim().length < 5) {
+        alert('Please give a reason for rejecting (at least 5 characters).');
+        return;
+    }
 
     if (action === 'approve' && role === 'ta') {
         if (!document.getElementById('noDutyConfirm').checked) {

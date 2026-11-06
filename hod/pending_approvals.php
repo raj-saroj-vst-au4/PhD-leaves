@@ -352,7 +352,9 @@ $pendingCount = count($pendingApprovals);
             <div class="space-y-4 px-5 py-5 sm:px-6">
                 <div>
                     <label for="hodRemarks" class="form-label">
-                        HOD Remarks <span class="text-rose-500">*</span>
+                        <span id="hodRemarksLabel">HOD Remarks</span>
+                        <span id="hodRemarksRequired" class="text-rose-500">*</span>
+                        <span id="hodRemarksOptional" class="font-normal text-gray-400">(optional)</span>
                     </label>
                     <textarea
                         id="hodRemarks"
@@ -360,8 +362,6 @@ $pendingCount = count($pendingApprovals);
                         rows="4"
                         class="form-textarea"
                         placeholder="Please provide your remarks as HOD (minimum 5 characters)..."
-                        required
-                        minlength="5"
                     ></textarea>
                     <p class="form-help">Your remarks will be visible to the student</p>
                 </div>
@@ -437,6 +437,18 @@ function showHODApprovalModal(leaveId, action, isExtended) {
     extendedNote.classList.add('hidden');
     rejectWarning.classList.add('hidden');
 
+    // Remarks are needed only to reject: they are the reason the student reads.
+    const remarks = document.getElementById('hodRemarks');
+    const rejecting = action !== 'approve';
+    remarks.required = rejecting;
+    remarks.minLength = rejecting ? 5 : 0;
+    remarks.placeholder = rejecting
+        ? 'Why is this leave being rejected? (at least 5 characters)'
+        : 'Any note for the student (optional)';
+    document.getElementById('hodRemarksLabel').textContent = rejecting ? 'Reason for rejection' : 'HOD Remarks';
+    document.getElementById('hodRemarksRequired').classList.toggle('hidden', !rejecting);
+    document.getElementById('hodRemarksOptional').classList.toggle('hidden', rejecting);
+
     if (action === 'approve') {
         title.textContent = 'Approve Leave as HOD';
         submitBtn.className = 'btn btn-success';
@@ -488,9 +500,9 @@ document.getElementById('hodApprovalForm').addEventListener('submit', async func
     const action = formData.get('action');
     const remarks = formData.get('remarks').trim();
 
-    // Validate remarks
-    if (remarks.length < 5) {
-        alert('Please provide remarks with at least 5 characters.');
+    // Remarks are required only to reject
+    if (action !== 'approve' && remarks.length < 5) {
+        alert('Please give a reason for rejecting (at least 5 characters).');
         document.getElementById('hodRemarks').focus();
         return;
     }

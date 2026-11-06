@@ -11,15 +11,24 @@
  * into "nobody can sign in".
  *
  * Only real attempts are ever recorded. The login and forgot-password forms
- * check their CSRF token first, and a wrong captcha is not recorded at all, so
- * a page that fires blind cross-site POSTs (or a script that never solves a
- * captcha) cannot run up anyone's counters.
+ * check their CSRF token first, so a page that fires blind cross-site POSTs
+ * cannot run up anyone's counters. Sign-in asks for a captcha only after
+ * LOGIN_CAPTCHA_AFTER_EMAIL_FAILS failures; from then on a wrong or missing
+ * captcha is not recorded, so a script that never solves one cannot reach the
+ * lockout.
  */
 
 // Sign-in: failures inside the window before further attempts are refused.
 define('LOGIN_FAIL_WINDOW_SECONDS', 15 * 60);
 define('LOGIN_FAIL_MAX_PER_EMAIL', 5);
 define('LOGIN_FAIL_MAX_PER_IP', 20);
+
+// The sign-in captcha is asked for only once an address (or one non-office IP)
+// has this many failures inside LOGIN_FAIL_WINDOW_SECONDS. The per-email figure
+// must stay below LOGIN_FAIL_MAX_PER_EMAIL: reaching the lockout then still
+// takes solved captchas, so a script cannot lock someone out for free.
+define('LOGIN_CAPTCHA_AFTER_EMAIL_FAILS', 2);
+define('LOGIN_CAPTCHA_AFTER_IP_FAILS', 5);
 
 // Forgot-password.
 define('RESET_REQUEST_WINDOW_SECONDS', 15 * 60);
@@ -162,6 +171,17 @@ function loginReserveAttempt(string $emailKey, ?string $ip) {
         return false;
     }
     return $id;
+}
+
+/**
+ * Does a sign-in for this address (null: not known yet, e.g. drawing the form)
+ * from this IP need the captcha? Yes after repeated recent failures for the
+ * address, or from the IP unless it is an office address everyone shares.
+ */
+function loginCaptchaNeeded(?string $emailKey, ?string $ip): bool {
+    return ($emailKey !== null
+            && authAttemptCount('login_fail', 'email', $emailKey, LOGIN_FAIL_WINDOW_SECONDS) >= LOGIN_CAPTCHA_AFTER_EMAIL_FAILS)
+        || authAttemptCount('login_fail', 'ip', authLimitedIp($ip), LOGIN_FAIL_WINDOW_SECONDS) >= LOGIN_CAPTCHA_AFTER_IP_FAILS;
 }
 
 /**

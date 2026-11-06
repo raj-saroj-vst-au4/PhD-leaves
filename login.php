@@ -30,17 +30,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'] ?? '';
     $clientIp = getClientIp();
 
-    // Captcha is checked (and consumed) BEFORE we spend cycles on password_verify.
-    $captchaOk = !$useCaptcha || captchaVerify((string) ($_POST['captcha'] ?? ''));
-
     // Nothing is recorded against any limit until the form is proven to be our
-    // own (CSRF) and the captcha is solved. Otherwise any web page opened on the
-    // office WiFi could fire blank cross-site POSTs and lock the whole office's
-    // shared IP out of sign-in.
+    // own (CSRF). Otherwise any web page opened on the office WiFi could fire
+    // blank cross-site POSTs and lock the whole office's shared IP out of
+    // sign-in.
     if (!verifyCSRFToken((string) ($_POST['csrf_token'] ?? ''))) {
         $error = 'The sign-in form had expired. Please try again.';
-    } elseif (!$captchaOk) {
-        $error = 'The security code did not match. Please type the characters shown in the new image.';
     } elseif (empty($email) || empty($password)) {
         $error = 'Please enter both email and password';
     } elseif (!validateEmail($email)) {
@@ -59,7 +54,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $signInEmail = $account['email'] ?? $email;
             $emailKey = authAttemptEmailKey($signInEmail);
 
-            if (($attemptId = loginReserveAttempt($emailKey, $clientIp)) === false) {
+            // The captcha is asked for only after repeated failures (for this
+            // account, from this IP, or earlier in this browser session). When it
+            // is, it is checked and consumed BEFORE anything is recorded or the
+            // password is looked at, so unsolved tries count for nothing.
+            $captchaNeeded = $useCaptcha && (!empty($_SESSION['login_captcha'])
+                || loginCaptchaNeeded($emailKey, $clientIp));
+            if ($captchaNeeded) {
+                $_SESSION['login_captcha'] = true;
+            }
+
+            if ($captchaNeeded && !isset($_POST['captcha'])) {
+                $error = 'Several sign-in attempts have failed. Please also complete the security check below.';
+            } elseif ($captchaNeeded && !captchaVerify((string) $_POST['captcha'])) {
+                $error = 'The security code did not match. Please type the characters shown in the new image.';
+            } elseif (($attemptId = loginReserveAttempt($emailKey, $clientIp)) === false) {
                 // Locked: the password is not even looked at, so a guesser learns
                 // nothing from further tries. Same message whether or not the address
                 // has an account.
@@ -67,6 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($user->authenticate($signInEmail, $password)) {
                 // Also removes the attempt reserved above.
                 authAttemptClear('login_fail', $emailKey);
+                unset($_SESSION['login_captcha']);
                 $userData = $user->getByEmail($signInEmail);
                 if ($byName) {
                     logSystemAction($userData['id'], 'login_by_name', 'auth', sprintf(
@@ -94,6 +104,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 // The reserved attempt stays on record as this failure.
                 $error = 'Invalid email or password';
+                if ($useCaptcha && loginCaptchaNeeded($emailKey, $clientIp)) {
+                    $_SESSION['login_captcha'] = true;   // the next try needs it
+                }
             }
         } catch (Exception $e) {
             logError("Login error: " . $e->getMessage());
@@ -106,6 +119,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // so every render — success, failure, or fresh visit — shows a new one. The
 // query string only defeats browser caching; the code never appears in this HTML.
 $captchaSrc = BASE_URL . '/captcha.php?t=' . bin2hex(random_bytes(4));
+
+// Shown only once it will be asked for: after failures in this session, or
+// when this (non-office) IP has failed repeatedly. Until then the form is just
+// email and password.
+$showCaptcha = $useCaptcha && (!empty($_SESSION['login_captcha'])
+    || loginCaptchaNeeded(null, getClientIp()));
 
 $pageTitle = 'Login';
 ?>
@@ -262,7 +281,7 @@ $pageTitle = 'Login';
                         </p>
                     </div>
 
-                    <?php if ($useCaptcha): ?>
+                    <?php if ($showCaptcha): ?>
                     <!-- Image Captcha -->
                     <div>
                         <label for="captcha" class="form-label">Security check</label>
@@ -327,27 +346,13 @@ $pageTitle = 'Login';
                 </div>
             </div>
 
-            <!-- Face attendance how-to, highlighted: every student needs it once -->
-            <a href="<?php echo BASE_URL; ?>/attendance-guide.php"
-               class="group mt-4 flex items-center gap-4 rounded-2xl bg-gradient-to-r from-amber-400 to-orange-500 p-4 text-white shadow-lg ring-1 ring-inset ring-white/20 transition hover:-translate-y-0.5 hover:shadow-xl sm:p-5">
-                <span class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/20 text-lg ring-1 ring-inset ring-white/30">
-                    <i class="fas fa-user-check"></i>
-                </span>
-                <span class="flex-1">
-                    <span class="block text-xs font-semibold uppercase tracking-wider text-amber-50">New &middot; Face attendance</span>
-                    <span class="mt-0.5 block font-semibold">How to register your face for attendance</span>
-                    <span class="mt-0.5 block text-sm text-amber-50">Step-by-step guide with screenshots</span>
-                </span>
-                <i class="fas fa-arrow-right transition group-hover:translate-x-1"></i>
-            </a>
-
             <!-- Footer (the brand panel carries it on large screens) -->
             <p class="mt-8 text-center text-sm text-blue-100 lg:hidden">&copy; <?php echo date('Y'); ?> IIT Bombay. All rights reserved.</p>
         </div>
     </main>
 </div>
 
-    <?php if ($useCaptcha): ?>
+    <?php if ($showCaptcha): ?>
     <script>
         // Fetching the image again issues a new code server-side.
         document.getElementById('captcha-refresh').addEventListener('click', function () {
